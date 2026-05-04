@@ -28,8 +28,7 @@ def initialize_dispatch_log(
     repo_slug: str,
     branch: str,
 ) -> dict[str, object]:
-    if path.exists():
-        raise FileExistsError(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
 
     payload = {
         "pipeline": {
@@ -40,7 +39,8 @@ def initialize_dispatch_log(
         },
         "tasks": {},
     }
-    _write_json_atomic(path, payload)
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     return payload
 
 

@@ -32,14 +32,18 @@ class PreflightResult:
     payload: dict[str, object]
 
 
-def _default_command_check(name: str) -> CommandCheck:
+def _completed_process_detail(completed: subprocess.CompletedProcess) -> str:
+    return completed.stdout.strip() or completed.stderr.strip() or "no command output"
+
+
+def _run_command_check(name: str, argv: list[str]) -> CommandCheck:
     executable = shutil.which(name)
     if executable is None:
         return CommandCheck(name=name, ok=False, detail="command not found")
 
     try:
         completed = subprocess.run(
-            [executable, "--version"],
+            [executable, *argv],
             capture_output=True,
             text=True,
             check=False,
@@ -47,8 +51,24 @@ def _default_command_check(name: str) -> CommandCheck:
     except OSError as exc:
         return CommandCheck(name=name, ok=False, detail=str(exc))
 
-    detail = completed.stdout.strip() or completed.stderr.strip() or "no version output"
+    detail = _completed_process_detail(completed)
     return CommandCheck(name=name, ok=completed.returncode == 0, detail=detail)
+
+
+def _default_gh_check() -> CommandCheck:
+    version_check = _run_command_check("gh", ["--version"])
+    if not version_check.ok:
+        return version_check
+
+    auth_check = _run_command_check("gh", ["auth", "status"])
+    if not auth_check.ok:
+        return auth_check
+
+    return auth_check
+
+
+def _default_command_check(name: str) -> CommandCheck:
+    return _run_command_check(name, ["--version"])
 
 
 def _default_python_check() -> CommandCheck:
@@ -77,7 +97,7 @@ def run_preflight(
 ) -> PreflightResult:
     runner_health = runner.health_check()
     capabilities = runner.discover_capabilities()
-    gh_status = gh_check or _default_command_check("gh")
+    gh_status = gh_check or _default_gh_check()
     git_status = git_check or _default_command_check("git")
     python_status = python_check or _default_python_check()
     repo_status = repo_check or _default_repo_check(repo_path)

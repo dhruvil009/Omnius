@@ -110,3 +110,20 @@ class DispatchLogTests(unittest.TestCase):
         self.assertEqual(replaced_dst, str(log_path))
         self.assertNotEqual(replaced_src, str(log_path.parent / "dispatch.json.tmp"))
         self.assertTrue(replaced_src.startswith(str(log_path.parent / "dispatch.json")))
+
+    def test_initialize_dispatch_log_does_not_use_exists_precheck(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "dispatch.json"
+
+            with patch("omnius.dispatcher.Path.exists", side_effect=AssertionError("exists precheck used")):
+                initialize_dispatch_log(
+                    log_path,
+                    pipeline_id="nightly-2026-05-03",
+                    runner_name="codex",
+                    repo_slug="example",
+                    branch="main",
+                )
+
+            payload = load_dispatch_log(log_path)
+
+        self.assertEqual(payload["pipeline"]["pipeline_id"], "nightly-2026-05-03")
