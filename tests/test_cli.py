@@ -1,4 +1,5 @@
 import contextlib
+import importlib.util
 import io
 import os
 import shutil
@@ -13,6 +14,7 @@ from omnius.cli import main
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
+HAS_SETUPTOOLS = importlib.util.find_spec("setuptools") is not None
 
 
 class CliSmokeTests(unittest.TestCase):
@@ -36,6 +38,7 @@ class CliSmokeTests(unittest.TestCase):
         self.assertIn("run", stdout.getvalue())
 
     @unittest.skipIf(sys.version_info < (3, 11), "package requires Python >= 3.11")
+    @unittest.skipUnless(HAS_SETUPTOOLS, "setuptools is required for console-script install coverage")
     def test_installed_console_script_prints_help(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -47,7 +50,16 @@ class CliSmokeTests(unittest.TestCase):
             shutil.copytree(ROOT / "src", source / "src")
 
             install = subprocess.run(
-                [sys.executable, "-m", "pip", "install", ".", "--prefix", str(prefix)],
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    ".",
+                    "--prefix",
+                    str(prefix),
+                    "--no-build-isolation",
+                ],
                 cwd=source,
                 text=True,
                 capture_output=True,
