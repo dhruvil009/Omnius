@@ -20,13 +20,13 @@ def load_local_task_entries(home: Path) -> list[LocalTaskEntry]:
     active_section = _extract_active_section(index_text)
     entries: list[LocalTaskEntry] = []
 
-    for raw_line in active_section.splitlines():
+    for line_number, raw_line in enumerate(active_section.splitlines(), start=1):
         line = raw_line.strip()
         if not line:
             continue
         match = _ACTIVE_LINE_RE.match(line)
         if match is None:
-            continue
+            raise ValueError(f"Malformed task entry in ## Active at line {line_number}: {line}")
 
         filename = match.group("filename")
         body = (home / "tasks" / filename).read_text(encoding="utf-8")

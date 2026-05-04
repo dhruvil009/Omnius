@@ -96,3 +96,19 @@ class TaskParsingTests(unittest.TestCase):
             rendered = render_local_tasks_section(load_local_task_entries(home))
 
         self.assertEqual(rendered, "<none>")
+
+    def test_load_local_task_entries_rejects_malformed_non_empty_active_line(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            bootstrap_workspace(home)
+            (home / "tasks.md").write_text(
+                "## Format\n"
+                "- <ID>: <Title> [file: <filename>.md]\n\n"
+                "## Active\n"
+                "not a task entry\n\n"
+                "## Completed\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "Malformed task entry"):
+                load_local_task_entries(home)
