@@ -30,3 +30,19 @@ class WorkspaceBootstrapTests(unittest.TestCase):
                 "## Completed\n",
             )
             self.assertEqual((home / "state" / "recurring_state.json").read_text().strip(), "{}")
+
+    def test_bootstrap_workspace_preserves_existing_seed_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            home.mkdir(parents=True)
+            (home / "state").mkdir()
+            (home / "tasks.md").write_text("sentinel tasks\n")
+            (home / "state" / "recurring_state.json").write_text('{"sentinel": true}\n')
+
+            bootstrap_workspace(home)
+
+            self.assertEqual((home / "tasks.md").read_text(), "sentinel tasks\n")
+            self.assertEqual(
+                (home / "state" / "recurring_state.json").read_text(),
+                '{"sentinel": true}\n',
+            )

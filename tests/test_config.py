@@ -74,3 +74,26 @@ class ConfigTests(unittest.TestCase):
 
             with self.assertRaises(ConfigError):
                 load_config(home / "omnius.toml")
+
+    def test_load_config_wraps_missing_file_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+
+            with self.assertRaises(ConfigError):
+                load_config(home / "omnius.toml")
+
+    def test_load_config_wraps_malformed_toml_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / "omnius.toml").write_text("[global\ntimezone = 'America/Los_Angeles'\n")
+
+            with self.assertRaises(ConfigError):
+                load_config(home / "omnius.toml")
+
+    def test_load_config_wraps_utf8_decode_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / "omnius.toml").write_bytes(b"\x80")
+
+            with self.assertRaises(ConfigError):
+                load_config(home / "omnius.toml")

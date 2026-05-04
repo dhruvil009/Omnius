@@ -50,7 +50,11 @@ class OmniusConfig:
 
 
 def load_config(path: Path) -> OmniusConfig:
-    data = tomllib.loads(path.read_text())
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise ConfigError(f"Failed to load config from {path}") from exc
+
     runner_default = data["runner"]["default"]
     if runner_default not in {"codex", "claude"}:
         raise ConfigError(f"Unsupported runner: {runner_default}")
