@@ -3,11 +3,19 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import tempfile
 
 
 def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_name(f"{path.name}.tmp")
+    descriptor, temp_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f"{path.name}.",
+        suffix=".tmp",
+        text=True,
+    )
+    os.close(descriptor)
+    temp_path = Path(temp_name)
     temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(temp_path, path)
 
@@ -20,6 +28,9 @@ def initialize_dispatch_log(
     repo_slug: str,
     branch: str,
 ) -> dict[str, object]:
+    if path.exists():
+        raise FileExistsError(path)
+
     payload = {
         "pipeline": {
             "pipeline_id": pipeline_id,
