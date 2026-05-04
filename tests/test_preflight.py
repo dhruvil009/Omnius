@@ -1,6 +1,9 @@
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Optional
+from unittest.mock import patch
 
 from omnius.preflight import CommandCheck, PreflightResult, RepoCheck, run_preflight
 from omnius.runners import get_runner
@@ -148,3 +151,59 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(gh_result.abort_reason, "gh")
         self.assertEqual(git_result.abort_reason, "git")
         self.assertEqual(python_result.abort_reason, "python")
+
+    def test_run_preflight_default_checks_abort_when_gh_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            (repo_path / ".git").write_text("gitdir: /tmp/example\n", encoding="utf-8")
+
+            def fake_which(name: str) -> Optional[str]:
+                if name == "gh":
+                    return None
+                return f"/usr/bin/{name}"
+
+            with patch("omnius.preflight.shutil.which", side_effect=fake_which):
+                result = run_preflight(
+                    runner=HealthyRunner(),
+                    repo_path=repo_path,
+                    required_capabilities=[],
+                    python_check=CommandCheck(name="python", ok=True, detail="3.11.9"),
+                )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.abort_reason, "gh")
+        self.assertFalse(result.payload["gh"]["ok"])
+        self.assertEqual(result.payload["gh"]["detail"], "command not found")
+
+    def test_run_preflight_default_checks_abort_when_git_version_probe_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            (repo_path / ".git").write_text("gitdir: /tmp/example\n", encoding="utf-8")
+
+            def fake_which(name: str) -> Optional[str]:
+                return f"/usr/bin/{name}"
+
+            def fake_run(argv: list[str], capture_output: bool, text: bool, check: bool) -> subprocess.CompletedProcess:
+                self.assertEqual(capture_output, True)
+                self.assertEqual(text, True)
+                self.assertEqual(check, False)
+                if argv[0] == "/usr/bin/gh":
+                    return subprocess.CompletedProcess(argv, 0, stdout="gh 2.0.0\n", stderr="")
+                if argv[0] == "/usr/bin/git":
+                    return subprocess.CompletedProcess(argv, 1, stdout="", stderr="git broken\n")
+                raise AssertionError(argv)
+
+            with patch("omnius.preflight.shutil.which", side_effect=fake_which):
+                with patch("omnius.preflight.subprocess.run", side_effect=fake_run):
+                    result = run_preflight(
+                        runner=HealthyRunner(),
+                        repo_path=repo_path,
+                        required_capabilities=[],
+                        python_check=CommandCheck(name="python", ok=True, detail="3.11.9"),
+                    )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.abort_reason, "git")
+        self.assertTrue(result.payload["gh"]["ok"])
+        self.assertFalse(result.payload["git"]["ok"])
+        self.assertEqual(result.payload["git"]["detail"], "git broken")

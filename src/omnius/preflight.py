@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 from typing import Optional
 
@@ -31,7 +33,22 @@ class PreflightResult:
 
 
 def _default_command_check(name: str) -> CommandCheck:
-    return CommandCheck(name=name, ok=True, detail="milestone-1 stub")
+    executable = shutil.which(name)
+    if executable is None:
+        return CommandCheck(name=name, ok=False, detail="command not found")
+
+    try:
+        completed = subprocess.run(
+            [executable, "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        return CommandCheck(name=name, ok=False, detail=str(exc))
+
+    detail = completed.stdout.strip() or completed.stderr.strip() or "no version output"
+    return CommandCheck(name=name, ok=completed.returncode == 0, detail=detail)
 
 
 def _default_python_check() -> CommandCheck:
