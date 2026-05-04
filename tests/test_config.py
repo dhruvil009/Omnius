@@ -75,6 +75,65 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaises(ConfigError):
                 load_config(home / "omnius.toml")
 
+    def test_load_config_accepts_claude_runner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / "omnius.toml").write_text(
+                textwrap.dedent(
+                    """
+                    [global]
+                    timezone = "America/Los_Angeles"
+                    pipeline_cron = "0 21 * * 0-4"
+                    pipeline_budget_minutes = 540
+                    default_task_budget_minutes = 120
+                    max_consecutive_failures = 3
+                    notification_backend = "none"
+
+                    [runner]
+                    default = "claude"
+
+                    [runners.claude]
+                    enabled = true
+
+                    [capabilities]
+                    brainstorm = "auto"
+                    review_diff = "auto"
+                    autonomous_testing = "auto"
+                    second_opinion = "auto"
+                    """
+                ).strip()
+            )
+
+            config = load_config(home / "omnius.toml")
+
+            self.assertEqual(config.runner.default, "claude")
+
+    def test_load_config_wraps_missing_required_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / "omnius.toml").write_text(
+                textwrap.dedent(
+                    """
+                    [global]
+                    timezone = "America/Los_Angeles"
+                    pipeline_cron = "0 21 * * 0-4"
+                    pipeline_budget_minutes = 540
+                    default_task_budget_minutes = 120
+                    max_consecutive_failures = 3
+                    notification_backend = "none"
+
+                    [capabilities]
+                    brainstorm = "auto"
+                    review_diff = "auto"
+                    autonomous_testing = "auto"
+                    second_opinion = "auto"
+                    """
+                ).strip()
+            )
+
+            with self.assertRaises(ConfigError):
+                load_config(home / "omnius.toml")
+
     def test_load_config_wraps_missing_file_errors(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)

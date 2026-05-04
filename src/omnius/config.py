@@ -55,13 +55,20 @@ def load_config(path: Path) -> OmniusConfig:
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise ConfigError(f"Failed to load config from {path}") from exc
 
-    runner_default = data["runner"]["default"]
+    try:
+        runner_default = data["runner"]["default"]
+        global_config = GlobalConfig(**data["global"])
+        capabilities = CapabilityConfig(**data["capabilities"])
+        repos = [RepoConfig(**repo) for repo in data.get("repos", [])]
+    except (KeyError, TypeError) as exc:
+        raise ConfigError(f"Invalid config structure in {path}") from exc
+
     if runner_default not in {"codex", "claude"}:
         raise ConfigError(f"Unsupported runner: {runner_default}")
 
     return OmniusConfig(
-        global_config=GlobalConfig(**data["global"]),
+        global_config=global_config,
         runner=RunnerSelection(default=runner_default),
-        capabilities=CapabilityConfig(**data["capabilities"]),
-        repos=[RepoConfig(**repo) for repo in data.get("repos", [])],
+        capabilities=capabilities,
+        repos=repos,
     )
