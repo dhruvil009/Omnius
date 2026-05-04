@@ -8,3 +8,6 @@ version = "0.1.0"
 description = "Runner-agnostic overnight orchestration for local development"
 readme = "README.md"
 requires-python = ">=3.11"
+
+[project.scripts]
+omnius = "omnius.cli:main"
