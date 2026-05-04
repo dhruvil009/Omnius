@@ -67,6 +67,21 @@ def _default_gh_check() -> CommandCheck:
     return auth_check
 
 
+def _default_gh_payload() -> tuple[CommandCheck, dict[str, object]]:
+    version_check = _run_command_check("gh", ["--version"])
+    payload = {
+        "probes": {
+            "version": {"ok": version_check.ok, "detail": version_check.detail},
+        }
+    }
+    if not version_check.ok:
+        return version_check, payload
+
+    auth_check = _run_command_check("gh", ["auth", "status"])
+    payload["probes"]["auth"] = {"ok": auth_check.ok, "detail": auth_check.detail}
+    return auth_check, payload
+
+
 def _default_command_check(name: str) -> CommandCheck:
     return _run_command_check(name, ["--version"])
 
@@ -97,7 +112,11 @@ def run_preflight(
 ) -> PreflightResult:
     runner_health = runner.health_check()
     capabilities = runner.discover_capabilities()
-    gh_status = gh_check or _default_gh_check()
+    gh_payload_extra: dict[str, object] = {}
+    if gh_check is None:
+        gh_status, gh_payload_extra = _default_gh_payload()
+    else:
+        gh_status = gh_check
     git_status = git_check or _default_command_check("git")
     python_status = python_check or _default_python_check()
     repo_status = repo_check or _default_repo_check(repo_path)
@@ -130,7 +149,7 @@ def run_preflight(
 
     payload = {
         "runner": {"name": runner.name, "ok": runner_health.ok, "summary": runner_health.summary},
-        "gh": {"ok": gh_status.ok, "detail": gh_status.detail},
+        "gh": {"ok": gh_status.ok, "detail": gh_status.detail, **gh_payload_extra},
         "git": {"ok": git_status.ok, "detail": git_status.detail},
         "python": {"ok": python_status.ok, "detail": python_status.detail},
         "repo": {

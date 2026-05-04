@@ -48,10 +48,19 @@ def load_dispatch_log(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def update_dispatch_log(path: Path, *, task_id: str, task_payload: dict[str, object]) -> dict[str, object]:
+def _merge_patch(base: dict[str, object], patch: dict[str, object]) -> dict[str, object]:
+    merged = dict(base)
+    for key, value in patch.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = _merge_patch(existing, value)
+            continue
+        merged[key] = value
+    return merged
+
+
+def update_dispatch_log(path: Path, *, patch: dict[str, object]) -> dict[str, object]:
     payload = load_dispatch_log(path)
-    tasks = dict(payload.get("tasks", {}))
-    tasks[task_id] = task_payload
-    payload["tasks"] = tasks
-    _write_json_atomic(path, payload)
-    return payload
+    merged = _merge_patch(payload, patch)
+    _write_json_atomic(path, merged)
+    return merged

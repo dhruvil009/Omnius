@@ -241,3 +241,51 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(result.abort_reason, "gh")
         self.assertFalse(result.payload["gh"]["ok"])
         self.assertEqual(result.payload["gh"]["detail"], "not logged in")
+        self.assertEqual(
+            result.payload["gh"]["probes"],
+            {
+                "version": {"ok": True, "detail": "gh 2.0.0"},
+                "auth": {"ok": False, "detail": "not logged in"},
+            },
+        )
+
+    def test_run_preflight_default_checks_keep_both_gh_probe_diagnostics_on_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            (repo_path / ".git").write_text("gitdir: /tmp/example\n", encoding="utf-8")
+
+            def fake_which(name: str) -> Optional[str]:
+                return f"/usr/bin/{name}"
+
+            def fake_run(argv: list[str], capture_output: bool, text: bool, check: bool) -> subprocess.CompletedProcess:
+                self.assertEqual(capture_output, True)
+                self.assertEqual(text, True)
+                self.assertEqual(check, False)
+                if argv == ["/usr/bin/gh", "--version"]:
+                    return subprocess.CompletedProcess(argv, 0, stdout="gh 2.1.0\n", stderr="")
+                if argv == ["/usr/bin/gh", "auth", "status"]:
+                    return subprocess.CompletedProcess(argv, 0, stdout="logged in\n", stderr="")
+                if argv == ["/usr/bin/git", "--version"]:
+                    return subprocess.CompletedProcess(argv, 0, stdout="git version 2.45.0\n", stderr="")
+                raise AssertionError(argv)
+
+            with patch("omnius.preflight.shutil.which", side_effect=fake_which):
+                with patch("omnius.preflight.subprocess.run", side_effect=fake_run):
+                    result = run_preflight(
+                        runner=HealthyRunner(),
+                        repo_path=repo_path,
+                        required_capabilities=[],
+                        python_check=CommandCheck(name="python", ok=True, detail="3.11.9"),
+                    )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.abort_reason, "")
+        self.assertTrue(result.payload["gh"]["ok"])
+        self.assertEqual(result.payload["gh"]["detail"], "logged in")
+        self.assertEqual(
+            result.payload["gh"]["probes"],
+            {
+                "version": {"ok": True, "detail": "gh 2.1.0"},
+                "auth": {"ok": True, "detail": "logged in"},
+            },
+        )
