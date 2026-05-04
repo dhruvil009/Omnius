@@ -5,8 +5,9 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path
+import sys
 
-from omnius.config import OmniusConfig, RepoConfig, load_config
+from omnius.config import ConfigError, RepoConfig, load_config
 from omnius.dispatcher import initialize_dispatch_log, update_dispatch_log
 from omnius.planner import (
     build_planner_prompt,
@@ -36,22 +37,26 @@ def build_parser() -> argparse.ArgumentParser:
 def run_command(_args: argparse.Namespace) -> int:
     workspace_home = _resolve_workspace_home()
     workspace_paths = bootstrap_workspace(workspace_home)
-    config = load_config(workspace_home / "omnius.toml")
-    primary_repo = _select_primary_repo(config)
+    try:
+        config = load_config(workspace_home / "omnius.toml")
+    except ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     runner = get_runner(config.runner.default)
 
     run_started_at = datetime.now().astimezone()
     run_date = run_started_at.strftime("%Y-%m-%d")
     journal_dir = workspace_paths.journal_dir / run_date / run_started_at.strftime("%H%M")
     journal_dir.mkdir(parents=True, exist_ok=True)
+    primary_repo = config.repos[0] if config.repos else None
 
     dispatch_log_path = journal_dir / "dispatch_log.json"
     initialize_dispatch_log(
         dispatch_log_path,
         pipeline_id=run_started_at.strftime("pipeline-%Y%m%d-%H%M%S"),
         runner_name=runner.name,
-        repo_slug=primary_repo.slug,
-        branch=primary_repo.branch,
+        repo_slug=primary_repo.slug if primary_repo is not None else "<none>",
+        branch=primary_repo.branch if primary_repo is not None else "<none>",
     )
     update_dispatch_log(
         dispatch_log_path,
@@ -64,64 +69,77 @@ def run_command(_args: argparse.Namespace) -> int:
             },
         },
     )
+    if primary_repo is None:
+        return _finalize_pipeline_failure(
+            dispatch_log_path,
+            abort_reason="config",
+            error="Config must define at least one repo for 'omnius run'",
+        )
 
-    preflight = run_preflight(
-        runner=runner,
-        repo_path=Path(primary_repo.path).expanduser(),
-        required_capabilities=_required_capabilities(config),
-    )
-    preflight_payload = {
-        "ok": preflight.ok,
-        "abort_reason": preflight.abort_reason,
-        "runner_name": preflight.runner_name,
-        "payload": preflight.payload,
-    }
-    _write_json(journal_dir / "preflight.json", preflight_payload)
-    update_dispatch_log(
-        dispatch_log_path,
-        patch={
-            "preflight": preflight_payload,
-        },
-    )
-    if not preflight.ok:
+    try:
+        preflight = run_preflight(
+            runner=runner,
+            repo_path=Path(primary_repo.path).expanduser(),
+            required_capabilities=_required_capabilities(config),
+        )
+        preflight_payload = {
+            "ok": preflight.ok,
+            "abort_reason": preflight.abort_reason,
+            "runner_name": preflight.runner_name,
+            "payload": preflight.payload,
+        }
+        _write_json(journal_dir / "preflight.json", preflight_payload)
         update_dispatch_log(
             dispatch_log_path,
             patch={
-                "pipeline": {
-                    "status": "aborted",
-                    "ended_at": datetime.now().astimezone().isoformat(),
-                    "abort_reason": preflight.abort_reason,
-                },
+                "preflight": preflight_payload,
             },
         )
-        return 1
+        if not preflight.ok:
+            update_dispatch_log(
+                dispatch_log_path,
+                patch={
+                    "pipeline": {
+                        "status": "aborted",
+                        "ended_at": datetime.now().astimezone().isoformat(),
+                        "abort_reason": preflight.abort_reason,
+                    },
+                },
+            )
+            return 1
 
-    local_task_entries = load_local_task_entries(workspace_home)
-    planner_prompt = build_planner_prompt(
-        template=load_planner_prompt_template(),
-        run_date=run_date,
-        journal_dir=str(journal_dir),
-        repos_table=_render_repos_table(config.repos),
-        local_tasks=render_local_tasks_section(local_task_entries),
-        recurring_tasks="<none>",
-        github_issues="<none>",
-        pr_review_comments="<none>",
-        pending_approval="<none>",
-    )
-    (journal_dir / "planner_prompt.md").write_text(planner_prompt, encoding="utf-8")
+        local_task_entries = load_local_task_entries(workspace_home)
+        planner_prompt = build_planner_prompt(
+            template=load_planner_prompt_template(),
+            run_date=run_date,
+            journal_dir=str(journal_dir),
+            repos_table=_render_repos_table(config.repos),
+            local_tasks=render_local_tasks_section(local_task_entries),
+            recurring_tasks="<none>",
+            github_issues="<none>",
+            pr_review_comments="<none>",
+            pending_approval="<none>",
+        )
+        (journal_dir / "planner_prompt.md").write_text(planner_prompt, encoding="utf-8")
 
-    planner_invocation = runner.invoke_planner(task_id="milestone-1-run", prompt=planner_prompt)
-    planner_response = _build_manifest_response(
-        run_date=run_date,
-        journal_dir=journal_dir,
-        local_task_entries=local_task_entries,
-        planner_plan_text=planner_invocation.plan_text,
-    )
-    (journal_dir / "planner_response.json").write_text(planner_response, encoding="utf-8")
+        planner_invocation = runner.invoke_planner(task_id="milestone-1-run", prompt=planner_prompt)
+        planner_response = _build_manifest_response(
+            run_date=run_date,
+            journal_dir=journal_dir,
+            local_task_entries=local_task_entries,
+            planner_plan_text=planner_invocation.plan_text,
+        )
+        (journal_dir / "planner_response.json").write_text(planner_response, encoding="utf-8")
 
-    manifest = parse_planner_response(planner_response)
-    validate_manifest(manifest)
-    _write_json(journal_dir / "manifest.json", manifest)
+        manifest = parse_planner_response(planner_response)
+        validate_manifest(manifest)
+        _write_json(journal_dir / "manifest.json", manifest)
+    except Exception as exc:
+        return _finalize_pipeline_failure(
+            dispatch_log_path,
+            abort_reason="pipeline_error",
+            error=str(exc),
+        )
 
     update_dispatch_log(
         dispatch_log_path,
@@ -146,13 +164,7 @@ def _resolve_workspace_home() -> Path:
     return Path(raw_home).expanduser()
 
 
-def _select_primary_repo(config: OmniusConfig) -> RepoConfig:
-    if not config.repos:
-        raise ValueError("Config must define at least one repo for 'omnius run'")
-    return config.repos[0]
-
-
-def _required_capabilities(config: OmniusConfig) -> list[str]:
+def _required_capabilities(_config: object) -> list[str]:
     return [
         "brainstorm",
         "review_diff",
@@ -187,6 +199,30 @@ def _build_manifest_response(
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _finalize_pipeline_failure(
+    dispatch_log_path: Path,
+    *,
+    abort_reason: str,
+    error: str,
+) -> int:
+    print(error, file=sys.stderr)
+    try:
+        update_dispatch_log(
+            dispatch_log_path,
+            patch={
+                "pipeline": {
+                    "status": "failed",
+                    "ended_at": datetime.now().astimezone().isoformat(),
+                    "abort_reason": abort_reason,
+                    "error": error,
+                },
+            },
+        )
+    except Exception:
+        pass
+    return 1
 
 
 def main(argv: list[str] | None = None) -> int:
