@@ -1,14 +1,16 @@
+import contextlib
+import io
 import os
 import subprocess
 import sys
-import tomllib
 import unittest
 from pathlib import Path
+
+from omnius.cli import main
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
-PYPROJECT = ROOT / "pyproject.toml"
 
 
 class CliSmokeTests(unittest.TestCase):
@@ -24,9 +26,12 @@ class CliSmokeTests(unittest.TestCase):
             env=env,
         )
 
-    def test_pyproject_declares_omnius_console_script(self) -> None:
-        project = tomllib.loads(PYPROJECT.read_text())["project"]
-        self.assertEqual(project["scripts"]["omnius"], "omnius.cli:main")
+    def test_main_callable_prints_top_level_help(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            result = main([])
+        self.assertEqual(result, 0)
+        self.assertIn("run", stdout.getvalue())
 
     def test_top_level_help_lists_run_command(self) -> None:
         result = self.run_cli("--help")
