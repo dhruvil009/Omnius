@@ -35,6 +35,7 @@ class CliSmokeTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn("run", stdout.getvalue())
 
+    @unittest.skipIf(sys.version_info < (3, 11), "package requires Python >= 3.11")
     def test_installed_console_script_prints_help(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
