@@ -47,6 +47,11 @@ class UnhealthyRunner(HealthyRunner):
         return RunnerHealth(ok=False, summary="runner offline")
 
 
+class UnhealthyExplodingRunner(UnhealthyRunner):
+    def discover_capabilities(self) -> dict[str, RunnerCapability]:
+        raise AssertionError("discover_capabilities should not be called for unhealthy runners")
+
+
 class PreflightTests(unittest.TestCase):
     def test_stub_runners_return_deterministic_placeholder_data(self) -> None:
         codex = get_runner("codex")
@@ -117,6 +122,33 @@ class PreflightTests(unittest.TestCase):
 
         self.assertFalse(result.ok)
         self.assertEqual(result.abort_reason, "runner")
+
+    def test_run_preflight_skips_capability_discovery_for_unhealthy_runner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            (repo_path / ".git").write_text("gitdir: /tmp/example\n", encoding="utf-8")
+
+            result = run_preflight(
+                runner=UnhealthyExplodingRunner(),
+                repo_path=repo_path,
+                required_capabilities=["brainstorm"],
+                gh_check=CommandCheck(name="gh", ok=True, detail="2.0.0"),
+                git_check=CommandCheck(name="git", ok=True, detail="2.45.0"),
+                python_check=CommandCheck(name="python", ok=True, detail="3.11.9"),
+            )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.abort_reason, "runner")
+        self.assertEqual(
+            result.payload["capabilities"],
+            {
+                "brainstorm": {
+                    "available": False,
+                    "detail": "capability discovery skipped for unhealthy runner",
+                    "required": True,
+                },
+            },
+        )
 
     def test_run_preflight_aborts_on_bad_tooling_or_python_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

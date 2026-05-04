@@ -55,18 +55,6 @@ def _run_command_check(name: str, argv: list[str]) -> CommandCheck:
     return CommandCheck(name=name, ok=completed.returncode == 0, detail=detail)
 
 
-def _default_gh_check() -> CommandCheck:
-    version_check = _run_command_check("gh", ["--version"])
-    if not version_check.ok:
-        return version_check
-
-    auth_check = _run_command_check("gh", ["auth", "status"])
-    if not auth_check.ok:
-        return auth_check
-
-    return auth_check
-
-
 def _default_gh_payload() -> tuple[CommandCheck, dict[str, object]]:
     version_check = _run_command_check("gh", ["--version"])
     payload = {
@@ -111,7 +99,13 @@ def run_preflight(
     repo_check: Optional[RepoCheck] = None,
 ) -> PreflightResult:
     runner_health = runner.health_check()
-    capabilities = runner.discover_capabilities()
+    capabilities: dict[str, object] | None
+    if runner_health.ok:
+        capabilities = runner.discover_capabilities()
+        skipped_capability_detail = "runner did not report capability"
+    else:
+        capabilities = None
+        skipped_capability_detail = "capability discovery skipped for unhealthy runner"
     gh_payload_extra: dict[str, object] = {}
     if gh_check is None:
         gh_status, gh_payload_extra = _default_gh_payload()
@@ -123,11 +117,11 @@ def run_preflight(
 
     capability_payload: dict[str, dict[str, object]] = {}
     for capability_name in required_capabilities:
-        capability = capabilities.get(capability_name)
+        capability = None if capabilities is None else capabilities.get(capability_name)
         if capability is None:
             capability_payload[capability_name] = {
                 "available": False,
-                "detail": "runner did not report capability",
+                "detail": skipped_capability_detail,
                 "required": True,
             }
             continue
