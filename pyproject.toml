@@ -11,3 +11,14 @@ requires-python = ">=3.11"
 
 [project.scripts]
 omnius = "omnius.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["omnius*"]
+
+[tool.setuptools.package-data]
+omnius = ["resources/prompts/*.md", "resources/schemas/*.json"]

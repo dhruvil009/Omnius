@@ -1,5 +1,7 @@
 import json
+import importlib.resources
 import unittest
+from unittest.mock import patch
 
 from omnius.planner import (
     build_planner_prompt,
@@ -11,6 +13,12 @@ from omnius.planner import (
 
 
 class PlannerTests(unittest.TestCase):
+    def test_packaged_planner_resources_use_importlib_resources(self) -> None:
+        with patch("importlib.resources.files", wraps=importlib.resources.files) as mock_files:
+            load_planner_prompt_template()
+
+        self.assertGreaterEqual(mock_files.call_count, 1)
+
     def test_packaged_planner_resources_load(self) -> None:
         template = load_planner_prompt_template()
         schema = load_manifest_schema()

@@ -1,20 +1,15 @@
 from __future__ import annotations
 
+import importlib.resources as resources
 import json
-from pathlib import Path
-
-
-_RESOURCE_ROOT = Path(__file__).resolve().parent / "resources"
-_PROMPT_PATH = _RESOURCE_ROOT / "prompts" / "planner.md"
-_SCHEMA_PATH = _RESOURCE_ROOT / "schemas" / "manifest.schema.json"
 
 
 def load_planner_prompt_template() -> str:
-    return _PROMPT_PATH.read_text(encoding="utf-8")
+    return _read_package_resource("resources", "prompts", "planner.md")
 
 
 def load_manifest_schema() -> dict[str, object]:
-    return json.loads(_SCHEMA_PATH.read_text(encoding="utf-8"))
+    return json.loads(_read_package_resource("resources", "schemas", "manifest.schema.json"))
 
 
 def build_planner_prompt(
@@ -107,3 +102,10 @@ def _validate_type(expected_type: str, value: object, *, path: str) -> None:
             raise ValueError(f"Manifest field {path} must be a string")
         return
     raise ValueError(f"Unsupported schema type: {expected_type}")
+
+
+def _read_package_resource(*path_parts: str) -> str:
+    resource = resources.files(__package__)
+    for part in path_parts:
+        resource = resource.joinpath(part)
+    return resource.read_text(encoding="utf-8")
