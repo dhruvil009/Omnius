@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "run_date",
+    "journal_dir",
+    "summary",
+    "tasks",
+    "skipped",
+    "notes"
+  ],
+  "properties": {
+    "run_date": {
+      "type": "string"
+    },
+    "journal_dir": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "tasks": {
+      "type": "array"
+    },
+    "skipped": {
+      "type": "array"
+    },
+    "notes": {
+      "type": "string"
+    }
+  }
+}
