@@ -132,13 +132,16 @@ def _dispatch_one_task(
     stdout_path = journal_dir / f"{task.task_id}_stdout.json"
     stderr_path = journal_dir / f"{task.task_id}_stderr.log"
 
-    _prepare_worktree(repo_path=repo_path, base_branch=repo.branch, branch=branch, worktree_path=worktree_path)
     try:
+        _prepare_worktree(repo_path=repo_path, base_branch=repo.branch, branch=branch, worktree_path=worktree_path)
+        task_source_path = workspace_home / task.source_ref
+        task_body = task_source_path.read_text(encoding="utf-8")
         prompt_text = _render_worker_prompt(
             task=task,
             branch=branch,
             base_ref=base_ref,
             journal_dir=journal_dir,
+            task_body=task_body,
         )
         prompt_path.write_text(prompt_text, encoding="utf-8")
         request = WorkerRequest(
@@ -202,10 +205,10 @@ def _dispatch_one_task(
 def _prepare_worktree(*, repo_path: Path, base_branch: str, branch: str, worktree_path: Path) -> None:
     _remove_existing_worktree(repo_path=repo_path, worktree_path=worktree_path)
     _run_git(repo_path, ["fetch", "origin", base_branch])
-    _run_git(
-        repo_path,
-        ["worktree", "add", "-b", branch, str(worktree_path), f"origin/{base_branch}"],
-    )
+    if _branch_exists(repo_path, branch):
+        _run_git(repo_path, ["worktree", "add", str(worktree_path), branch])
+        return
+    _run_git(repo_path, ["worktree", "add", "-b", branch, str(worktree_path), f"origin/{base_branch}"])
 
 
 def _remove_existing_worktree(*, repo_path: Path, worktree_path: Path) -> None:
@@ -249,17 +252,20 @@ def _render_worker_prompt(
     branch: str,
     base_ref: str,
     journal_dir: Path,
+    task_body: str,
 ) -> str:
     template = _load_worker_prompt_template()
     return template.format(
         task_id=task.task_id,
         title=task.title,
+        source_ref=task.source_ref,
         branch=branch,
         base_ref=base_ref,
         journal_dir=str(journal_dir),
         max_time_minutes=task.max_time_minutes,
         complexity=task.complexity,
         task_type=task.task_type,
+        task_body=task_body,
     )
 
 
@@ -383,7 +389,7 @@ def _classify_worker_result(*, task: DispatchTask, stdout_path: Path, branch: st
             "title": task.title,
             "repo_slug": task.repo_slug,
             "status": "PARTIAL",
-            "branch": payload.get("branch"),
+            "branch": payload.get("branch") or branch,
             "notes": payload.get("notes"),
         }
     if status == "BLOCKED":
@@ -436,6 +442,15 @@ def _run_git(repo_path: Path, args: list[str]) -> None:
         capture_output=True,
         text=True,
     )
+
+
+def _branch_exists(repo_path: Path, branch: str) -> bool:
+    completed = subprocess.run(
+        ["git", "-C", str(repo_path), "rev-parse", "--verify", "--quiet", branch],
+        capture_output=True,
+        text=True,
+    )
+    return completed.returncode == 0
 
 
 def _now_iso() -> str:

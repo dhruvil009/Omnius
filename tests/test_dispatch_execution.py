@@ -71,6 +71,9 @@ class DispatchExecutionTests(unittest.TestCase):
             self.assertTrue((journal_dir / "O00001_prompt.md").exists())
             self.assertTrue((journal_dir / "O00001_stdout.json").exists())
             self.assertTrue((journal_dir / "O00001_stderr.log").exists())
+            prompt_text = (journal_dir / "O00001_prompt.md").read_text(encoding="utf-8")
+            self.assertIn("Source task file: tasks/O00001_add_sample.md", prompt_text)
+            self.assertIn("Task body", prompt_text)
             self.assertFalse((repo_path / ".omnius" / "worktrees" / "2026-05-05" / "O00001").exists())
             self.assertTrue((home / "tasks" / "completed" / "O00001_add_sample.md").exists())
             self.assertFalse((home / "tasks" / "O00001_add_sample.md").exists())
@@ -152,6 +155,73 @@ class DispatchExecutionTests(unittest.TestCase):
             self.assertEqual(task_state["status"], "TIMEOUT")
             self.assertTrue((home / "tasks" / "O00001_add_sample.md").exists())
             self.assertFalse((repo_path / ".omnius" / "worktrees" / "2026-05-05" / "O00001").exists())
+
+    def test_dispatch_manifest_reuses_same_day_branch_and_keeps_partial_branch_pointer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo_path = self._create_repo_with_origin(tmp_path)
+            home = self._create_workspace_home(tmp_path)
+            self._write_local_task(home)
+
+            first_journal_dir = home / "journal" / "2026-05-05" / "2100"
+            first_journal_dir.mkdir(parents=True, exist_ok=True)
+            first_dispatch_log_path = first_journal_dir / "dispatch_log.json"
+            initialize_dispatch_log(
+                first_dispatch_log_path,
+                pipeline_id="pipeline-20260505-210000",
+                runner_name="fake",
+                repo_slug="example",
+                branch="main",
+            )
+
+            partial_script = self._write_worker_script(
+                tmp_path / "partial.sh",
+                'printf \'{"status":"PARTIAL","notes":"needs follow-up"}\\n\'\n',
+            )
+            partial_result = dispatch_manifest(
+                manifest=self._manifest(),
+                runner=FakeRunner(partial_script),
+                config=self._config(repo_path),
+                workspace_home=home,
+                journal_dir=first_journal_dir,
+                dispatch_log_path=first_dispatch_log_path,
+            )
+
+            branch = "omnius/2026-05-05/O00001"
+            partial_state = partial_result["tasks"]["O00001"]
+            self.assertEqual(partial_state["status"], "PARTIAL")
+            self.assertEqual(partial_state["branch"], branch)
+            self.assertTrue((home / "tasks" / "O00001_add_sample.md").exists())
+
+            second_journal_dir = home / "journal" / "2026-05-05" / "2200"
+            second_journal_dir.mkdir(parents=True, exist_ok=True)
+            second_dispatch_log_path = second_journal_dir / "dispatch_log.json"
+            initialize_dispatch_log(
+                second_dispatch_log_path,
+                pipeline_id="pipeline-20260505-220000",
+                runner_name="fake",
+                repo_slug="example",
+                branch="main",
+            )
+
+            success_script = self._write_worker_script(
+                tmp_path / "success-after-partial.sh",
+                f'printf \'{{"status":"SUCCESS","branch":"{branch}","summary":"done"}}\\n\'\n',
+            )
+            success_result = dispatch_manifest(
+                manifest=self._manifest(),
+                runner=FakeRunner(success_script),
+                config=self._config(repo_path),
+                workspace_home=home,
+                journal_dir=second_journal_dir,
+                dispatch_log_path=second_dispatch_log_path,
+            )
+
+            success_state = success_result["tasks"]["O00001"]
+            self.assertEqual(success_state["status"], "SUCCESS")
+            self.assertEqual(success_state["branch"], branch)
+            self.assertFalse((home / "tasks" / "O00001_add_sample.md").exists())
+            self.assertTrue((home / "tasks" / "completed" / "O00001_add_sample.md").exists())
 
     def _config(self, repo_path: Path) -> OmniusConfig:
         return OmniusConfig(
