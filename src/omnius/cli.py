@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 
 from omnius.config import ConfigError, RepoConfig, load_config
-from omnius.dispatcher import initialize_dispatch_log, update_dispatch_log
+from omnius.dispatcher import dispatch_manifest, initialize_dispatch_log, update_dispatch_log
 from omnius.planner import (
     build_local_manifest_tasks,
     build_planner_prompt,
@@ -137,6 +137,23 @@ def run_command(_args: argparse.Namespace) -> int:
         manifest = parse_planner_response(planner_response)
         validate_manifest(manifest)
         _write_json(journal_dir / "manifest.json", manifest)
+        update_dispatch_log(
+            dispatch_log_path,
+            patch={
+                "planner": {
+                    "task_id": planner_invocation.task_id,
+                    "runner_name": planner_invocation.runner_name,
+                }
+            },
+        )
+        dispatch_result = dispatch_manifest(
+            manifest=manifest,
+            runner=runner,
+            config=config,
+            workspace_home=workspace_home,
+            journal_dir=journal_dir,
+            dispatch_log_path=dispatch_log_path,
+        )
     except Exception as exc:
         return _finalize_pipeline_failure(
             dispatch_log_path,
@@ -151,13 +168,9 @@ def run_command(_args: argparse.Namespace) -> int:
                 "status": "completed",
                 "ended_at": datetime.now().astimezone().isoformat(),
             },
-            "planner": {
-                "task_id": planner_invocation.task_id,
-                "runner_name": planner_invocation.runner_name,
-            },
         },
     )
-    return 0
+    return 0 if _all_tasks_succeeded(dispatch_result) else 1
 
 
 def _resolve_workspace_home() -> Path:
@@ -232,6 +245,18 @@ def _finalize_pipeline_failure(
     except Exception:
         pass
     return 1
+
+
+def _all_tasks_succeeded(dispatch_result: dict[str, object]) -> bool:
+    tasks = dispatch_result.get("tasks")
+    if not isinstance(tasks, dict):
+        return True
+    for task_state in tasks.values():
+        if not isinstance(task_state, dict):
+            return False
+        if task_state.get("status") != "SUCCESS":
+            return False
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:

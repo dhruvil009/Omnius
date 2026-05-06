@@ -17,19 +17,21 @@ PYTHON = sys.executable
 
 @unittest.skipIf(sys.version_info < (3, 11), "package requires Python >= 3.11")
 class RunPipelineTests(unittest.TestCase):
-    def test_run_command_executes_local_milestone_one_pipeline(self) -> None:
+    def test_run_command_executes_local_task_to_completion_and_archives_it(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             home = tmp_path / ".omnius"
-            repo = tmp_path / "repo"
-            repo.mkdir()
-            (repo / ".git").write_text("gitdir: /tmp/example\n", encoding="utf-8")
+            repo = self._create_repo_with_origin(tmp_path)
 
             self._write_config(home=home, repo=repo)
             self._write_local_task(home)
-            fake_bin = self._write_fake_preflight_binaries(tmp_path)
+            fake_bin, fake_codex = self._write_fake_run_binaries(tmp_path)
 
-            result = self._run_cli(home=home, fake_bin=fake_bin)
+            result = self._run_cli(
+                home=home,
+                fake_bin=fake_bin,
+                extra_env={"OMNIUS_CODEX_BIN": str(fake_codex)},
+            )
 
             self.assertEqual(result.returncode, 0, result.stderr)
             journals = sorted((home / "journal").rglob("dispatch_log.json"))
@@ -41,6 +43,9 @@ class RunPipelineTests(unittest.TestCase):
             self.assertTrue((journal_dir / "planner_response.json").exists())
             self.assertTrue((journal_dir / "manifest.json").exists())
             self.assertTrue((journal_dir / "dispatch_log.json").exists())
+            self.assertTrue((journal_dir / "O00001_prompt.md").exists())
+            self.assertTrue((journal_dir / "O00001_stdout.json").exists())
+            self.assertTrue((journal_dir / "O00001_stderr.log").exists())
 
             manifest = json.loads((journal_dir / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["summary"], "1 task(s) planned from local queue")
@@ -63,6 +68,39 @@ class RunPipelineTests(unittest.TestCase):
 
             dispatch_log = json.loads((journal_dir / "dispatch_log.json").read_text(encoding="utf-8"))
             self.assertEqual(dispatch_log["pipeline"]["status"], "completed")
+            self.assertEqual(dispatch_log["tasks"]["O00001"]["status"], "SUCCESS")
+            self.assertEqual(dispatch_log["tasks"]["O00001"]["summary"], "done")
+            self.assertTrue((home / "tasks" / "completed" / "O00001_add_sample.md").exists())
+            self.assertFalse((home / "tasks" / "O00001_add_sample.md").exists())
+            self.assertFalse((repo / ".omnius" / "worktrees" / journal_dir.parent.name / "O00001").exists())
+
+    def test_run_command_returns_nonzero_when_worker_result_is_non_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            home = tmp_path / ".omnius"
+            repo = self._create_repo_with_origin(tmp_path)
+
+            self._write_config(home=home, repo=repo)
+            self._write_local_task(home)
+            fake_bin, fake_codex = self._write_fake_run_binaries(tmp_path)
+
+            result = self._run_cli(
+                home=home,
+                fake_bin=fake_bin,
+                extra_env={
+                    "OMNIUS_CODEX_BIN": str(fake_codex),
+                    "OMNIUS_FAKE_CODEX_RESULT": "FAILURE",
+                },
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            journals = sorted((home / "journal").rglob("dispatch_log.json"))
+            self.assertEqual(len(journals), 1)
+            dispatch_log = json.loads(journals[0].read_text(encoding="utf-8"))
+            self.assertEqual(dispatch_log["pipeline"]["status"], "completed")
+            self.assertEqual(dispatch_log["tasks"]["O00001"]["status"], "FAILURE")
+            self.assertTrue((home / "tasks" / "O00001_add_sample.md").exists())
+            self.assertFalse((home / "tasks" / "completed" / "O00001_add_sample.md").exists())
 
     def test_run_command_exits_nonzero_without_traceback_when_config_has_no_repos(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -86,15 +124,17 @@ class RunPipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             home = tmp_path / ".omnius"
-            repo = tmp_path / "repo"
-            repo.mkdir()
-            (repo / ".git").write_text("gitdir: /tmp/example\n", encoding="utf-8")
+            repo = self._create_repo_with_origin(tmp_path)
 
             self._write_config(home=home, repo=repo)
             self._write_malformed_local_task(home)
-            fake_bin = self._write_fake_preflight_binaries(tmp_path)
+            fake_bin, fake_codex = self._write_fake_run_binaries(tmp_path)
 
-            result = self._run_cli(home=home, fake_bin=fake_bin)
+            result = self._run_cli(
+                home=home,
+                fake_bin=fake_bin,
+                extra_env={"OMNIUS_CODEX_BIN": str(fake_codex)},
+            )
 
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn("Traceback", result.stderr)
@@ -109,12 +149,20 @@ class RunPipelineTests(unittest.TestCase):
             self.assertEqual(dispatch_log["pipeline"]["status"], "failed")
             self.assertIn("ended_at", dispatch_log["pipeline"])
 
-    def _run_cli(self, *, home: Path, fake_bin: Optional[Path] = None) -> subprocess.CompletedProcess[str]:
+    def _run_cli(
+        self,
+        *,
+        home: Path,
+        fake_bin: Optional[Path] = None,
+        extra_env: Optional[dict[str, str]] = None,
+    ) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         env["OMNIUS_HOME"] = str(home)
         env["PYTHONPATH"] = str(SRC)
         if fake_bin is not None:
             env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
+        if extra_env is not None:
+            env.update(extra_env)
         return subprocess.run(
             [PYTHON, "-m", "omnius", "run"],
             cwd=ROOT,
@@ -199,7 +247,7 @@ class RunPipelineTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def _write_fake_preflight_binaries(self, tmp_path: Path) -> Path:
+    def _write_fake_run_binaries(self, tmp_path: Path) -> tuple[Path, Path]:
         fake_bin = tmp_path / "bin"
         fake_bin.mkdir()
         self._write_executable(
@@ -220,22 +268,130 @@ class RunPipelineTests(unittest.TestCase):
                 """
             ),
         )
+        fake_codex = fake_bin / "omnius-fake-codex"
         self._write_executable(
-            fake_bin / "git",
+            fake_codex,
             textwrap.dedent(
                 """\
                 #!/bin/sh
-                if [ "$1" = "--version" ]; then
-                    echo "git version 2.45.0"
-                    exit 0
-                fi
-                echo "unexpected git args: $@" >&2
-                exit 1
+                set -eu
+                [ "$1" = "exec" ] || {
+                    echo "expected exec mode" >&2
+                    exit 10
+                }
+                shift
+                worktree=""
+                saw_output_schema="0"
+                prompt=""
+                while [ "$#" -gt 0 ]; do
+                    case "$1" in
+                        --cd)
+                            shift
+                            worktree="$1"
+                            ;;
+                        --sandbox)
+                            shift
+                            [ "$1" = "workspace-write" ] || {
+                                echo "unexpected sandbox: $1" >&2
+                                exit 11
+                            }
+                            ;;
+                        --ask-for-approval)
+                            shift
+                            [ "$1" = "never" ] || {
+                                echo "unexpected approval mode: $1" >&2
+                                exit 12
+                            }
+                            ;;
+                        --output-schema)
+                            shift
+                            [ -f "$1" ] || {
+                                echo "missing schema file: $1" >&2
+                                exit 13
+                            }
+                            saw_output_schema="1"
+                            ;;
+                        *)
+                            prompt="$1"
+                            ;;
+                    esac
+                    shift
+                done
+                [ "$saw_output_schema" = "1" ] || {
+                    echo "missing --output-schema" >&2
+                    exit 14
+                }
+                [ -n "$worktree" ] || {
+                    echo "missing --cd path" >&2
+                    exit 15
+                }
+                actual_pwd="$(pwd -P)"
+                expected_pwd="$(cd "$worktree" && pwd -P)"
+                [ "$actual_pwd" = "$expected_pwd" ] || {
+                    echo "unexpected cwd: $actual_pwd != $expected_pwd" >&2
+                    exit 16
+                }
+                [ -n "$prompt" ] || {
+                    echo "missing prompt payload" >&2
+                    exit 17
+                }
+                case "${OMNIUS_FAKE_CODEX_RESULT:-SUCCESS}" in
+                    SUCCESS)
+                        printf '{"status":"SUCCESS","branch":"%s","summary":"done"}\n' "$OMNIUS_BRANCH"
+                        ;;
+                    FAILURE)
+                        printf '{"status":"FAILURE","error":"worker failed"}\n'
+                        ;;
+                    *)
+                        echo "unsupported fake result: ${OMNIUS_FAKE_CODEX_RESULT}" >&2
+                        exit 18
+                        ;;
+                esac
                 """
             ),
         )
-        return fake_bin
+        return fake_bin, fake_codex
+
+    def _create_repo_with_origin(self, tmp_path: Path) -> Path:
+        origin = tmp_path / "origin.git"
+        repo = tmp_path / "repo"
+        subprocess.run(["git", "init", "--bare", str(origin)], check=True, capture_output=True, text=True)
+        subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "user.email", "omnius@example.com"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "user.name", "Omnius Test"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        (repo / ".gitignore").write_text(".omnius/\n", encoding="utf-8")
+        (repo / "README.md").write_text("example\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True, capture_output=True, text=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "commit", "-m", "initial"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "remote", "add", "origin", str(origin)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "push", "-u", "origin", "main"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return repo
 
     def _write_executable(self, path: Path, content: str) -> None:
-        path.write_text(content, encoding="utf-8")
+        path.write_text(textwrap.dedent(content).lstrip(), encoding="utf-8")
         path.chmod(path.stat().st_mode | stat.S_IXUSR)

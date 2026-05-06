@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from omnius.runners.base import (
     PlannerInvocation,
     RunnerAdapter,
@@ -51,8 +53,9 @@ class CodexRunner(RunnerAdapter):
         )
 
     def build_worker_command(self, request: WorkerRequest) -> list[str]:
+        executable = os.environ.get("OMNIUS_CODEX_BIN", "codex")
         return [
-            "codex",
+            executable,
             "exec",
             "--cd",
             str(request.worktree_path),

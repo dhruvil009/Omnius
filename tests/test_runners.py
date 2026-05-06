@@ -1,5 +1,7 @@
+import os
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from omnius.runners import (
     ClaudeRunner,
@@ -84,3 +86,28 @@ class RunnerCommandTests(unittest.TestCase):
         self.assertIn("--json-schema", command)
         self.assertIn("--permission-mode", command)
         self.assertEqual(command[-1], request.prompt)
+
+    def test_runner_commands_honor_executable_env_overrides(self) -> None:
+        request = WorkerRequest(
+            task_id="O00001",
+            prompt="Implement the task",
+            prompt_path=Path("/tmp/prompt.md"),
+            worktree_path=Path("/tmp/worktree"),
+            journal_dir=Path("/tmp/journal"),
+            branch="omnius/2026-05-05/O00001",
+            base_ref="origin/main",
+            max_time_minutes=120,
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "OMNIUS_CODEX_BIN": "/tmp/fake-codex",
+                "OMNIUS_CLAUDE_BIN": "/tmp/fake-claude",
+            },
+            clear=False,
+        ):
+            codex_command = CodexRunner().build_worker_command(request)
+            claude_command = ClaudeRunner().build_worker_command(request)
+
+        self.assertEqual(codex_command[0], "/tmp/fake-codex")
+        self.assertEqual(claude_command[0], "/tmp/fake-claude")
