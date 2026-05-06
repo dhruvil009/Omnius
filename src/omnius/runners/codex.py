@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from omnius.runners.base import PlannerInvocation, RunnerAdapter, RunnerCapability, RunnerHealth
+from omnius.runners.base import (
+    PlannerInvocation,
+    RunnerAdapter,
+    RunnerCapability,
+    RunnerHealth,
+    WorkerRequest,
+    load_worker_result_schema_path,
+)
 
 
 class CodexRunner(RunnerAdapter):
@@ -42,3 +49,18 @@ class CodexRunner(RunnerAdapter):
             prompt=prompt,
             plan_text=f"codex placeholder plan for {task_id}: {prompt}",
         )
+
+    def build_worker_command(self, request: WorkerRequest) -> list[str]:
+        return [
+            "codex",
+            "exec",
+            "--cd",
+            str(request.worktree_path),
+            "--sandbox",
+            "workspace-write",
+            "--ask-for-approval",
+            "never",
+            "--output-schema",
+            str(load_worker_result_schema_path()),
+            request.prompt,
+        ]

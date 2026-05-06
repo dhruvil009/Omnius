@@ -12,6 +12,7 @@ from omnius.runners.base import (
     RunnerAdapter,
     RunnerCapability,
     RunnerHealth,
+    WorkerRequest,
 )
 
 
@@ -36,6 +37,9 @@ class HealthyRunner(RunnerAdapter):
             prompt=prompt,
             plan_text="placeholder plan",
         )
+
+    def build_worker_command(self, request: WorkerRequest) -> list[str]:
+        return ["healthy-runner", request.task_id]
 
 
 class UnhealthyRunner(HealthyRunner):

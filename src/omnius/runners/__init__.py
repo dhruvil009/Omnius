@@ -1,6 +1,16 @@
 from __future__ import annotations
 
-from omnius.runners.base import PlannerInvocation, RunnerAdapter, RunnerCapability, RunnerHealth
+from omnius.runners.base import (
+    PlannerInvocation,
+    RunnerAdapter,
+    RunnerCapability,
+    RunnerHealth,
+    WorkerRequest,
+    WorkerResult,
+    load_worker_result_schema,
+    load_worker_result_schema_path,
+    load_worker_result_schema_text,
+)
 from omnius.runners.claude import ClaudeRunner
 from omnius.runners.codex import CodexRunner
 
@@ -20,5 +30,10 @@ __all__ = [
     "RunnerAdapter",
     "RunnerCapability",
     "RunnerHealth",
+    "WorkerRequest",
+    "WorkerResult",
     "get_runner",
+    "load_worker_result_schema",
+    "load_worker_result_schema_path",
+    "load_worker_result_schema_text",
 ]

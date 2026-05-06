@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from omnius.runners.base import PlannerInvocation, RunnerAdapter, RunnerCapability, RunnerHealth
+from omnius.runners.base import (
+    PlannerInvocation,
+    RunnerAdapter,
+    RunnerCapability,
+    RunnerHealth,
+    WorkerRequest,
+    load_worker_result_schema_text,
+)
 
 
 class ClaudeRunner(RunnerAdapter):
@@ -42,3 +49,16 @@ class ClaudeRunner(RunnerAdapter):
             prompt=prompt,
             plan_text=f"claude placeholder plan for {task_id}: {prompt}",
         )
+
+    def build_worker_command(self, request: WorkerRequest) -> list[str]:
+        return [
+            "claude",
+            "--print",
+            "--output-format",
+            "json",
+            "--json-schema",
+            load_worker_result_schema_text(),
+            "--permission-mode",
+            "dontAsk",
+            request.prompt,
+        ]
