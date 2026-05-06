@@ -3,7 +3,7 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from omnius.tasks import load_local_task_entries, render_local_tasks_section
+from omnius.tasks import archive_local_task_success, load_local_task_entries, render_local_tasks_section
 from omnius.workspace import bootstrap_workspace
 
 
@@ -112,3 +112,33 @@ class TaskParsingTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "Malformed task entry"):
                 load_local_task_entries(home)
+
+    def test_archive_local_task_success_moves_file_and_updates_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            bootstrap_workspace(home)
+            (home / "tasks.md").write_text(
+                "## Format\n"
+                "- <ID>: <Title> [file: <filename>.md]\n\n"
+                "## Active\n"
+                "- O00001: Add sample [file: O00001_add_sample.md]\n\n"
+                "## Completed\n",
+                encoding="utf-8",
+            )
+            (home / "tasks" / "O00001_add_sample.md").write_text("Task body\n", encoding="utf-8")
+
+            archive_local_task_success(
+                home=home,
+                task_id="O00001",
+                filename="O00001_add_sample.md",
+                run_date="2026-05-05",
+            )
+
+            updated_index = (home / "tasks.md").read_text(encoding="utf-8")
+            original_task_exists = (home / "tasks" / "O00001_add_sample.md").exists()
+            archived_task_exists = (home / "tasks" / "completed" / "O00001_add_sample.md").exists()
+
+        self.assertFalse(original_task_exists)
+        self.assertTrue(archived_task_exists)
+        self.assertNotIn("- O00001: Add sample [file: O00001_add_sample.md]", updated_index)
+        self.assertIn("- 2026-05-05: O00001: Add sample [file: O00001_add_sample.md]", updated_index)
