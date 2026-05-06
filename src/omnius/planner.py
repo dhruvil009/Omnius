@@ -1,7 +1,35 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import importlib.resources as resources
 import json
+from pathlib import Path
+
+from omnius.tasks import LocalTaskEntry
+
+
+@dataclass(frozen=True)
+class ManifestTask:
+    task_id: str
+    title: str
+    task_type: str
+    repo_slug: str
+    source_ref: str
+    filename: str
+    max_time_minutes: int
+    complexity: str
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "id": self.task_id,
+            "title": self.title,
+            "type": self.task_type,
+            "repo_slug": self.repo_slug,
+            "source_ref": self.source_ref,
+            "filename": self.filename,
+            "max_time_minutes": self.max_time_minutes,
+            "complexity": self.complexity,
+        }
 
 
 def load_planner_prompt_template() -> str:
@@ -48,6 +76,29 @@ def parse_planner_response(raw_response: str) -> dict[str, object]:
 
 def validate_manifest(payload: dict[str, object]) -> None:
     _validate_against_schema(load_manifest_schema(), payload, path="manifest")
+
+
+def build_local_manifest_tasks(
+    *,
+    entries: list[LocalTaskEntry],
+    default_task_budget_minutes: int,
+) -> list[dict[str, object]]:
+    manifest_tasks: list[dict[str, object]] = []
+    for entry in entries:
+        metadata = _extract_task_frontmatter(entry.body)
+        manifest_tasks.append(
+            ManifestTask(
+                task_id=entry.task_id,
+                title=_require_frontmatter_value(metadata, "title", entry.task_id),
+                task_type="implementation",
+                repo_slug=_require_frontmatter_value(metadata, "repo", entry.task_id),
+                source_ref=str(Path("tasks") / entry.filename),
+                filename=entry.filename,
+                max_time_minutes=default_task_budget_minutes,
+                complexity="small",
+            ).as_dict()
+        )
+    return manifest_tasks
 
 
 def _render_section(label: str, value: str) -> str:
@@ -101,6 +152,10 @@ def _validate_type(expected_type: str, value: object, *, path: str) -> None:
         if not isinstance(value, str):
             raise ValueError(f"Manifest field {path} must be a string")
         return
+    if expected_type == "integer":
+        if type(value) is not int:
+            raise ValueError(f"Manifest field {path} must be an integer")
+        return
     raise ValueError(f"Unsupported schema type: {expected_type}")
 
 
@@ -109,3 +164,28 @@ def _read_package_resource(*path_parts: str) -> str:
     for part in path_parts:
         resource = resource.joinpath(part)
     return resource.read_text(encoding="utf-8")
+
+
+def _extract_task_frontmatter(body: str) -> dict[str, str]:
+    lines = body.splitlines()
+    if len(lines) < 3 or lines[0].strip() != "---":
+        raise ValueError("Task body must start with YAML frontmatter")
+
+    metadata: dict[str, str] = {}
+    for line in lines[1:]:
+        stripped = line.strip()
+        if stripped == "---":
+            return metadata
+        key, separator, value = line.partition(":")
+        if separator == "":
+            raise ValueError(f"Malformed task frontmatter line: {line}")
+        metadata[key.strip()] = value.strip()
+
+    raise ValueError("Task body frontmatter must be closed with '---'")
+
+
+def _require_frontmatter_value(metadata: dict[str, str], key: str, task_id: str) -> str:
+    value = metadata.get(key)
+    if not value:
+        raise ValueError(f"Task {task_id} frontmatter must define '{key}'")
+    return value

@@ -76,6 +76,29 @@ class PlannerTests(unittest.TestCase):
 
         validate_manifest(manifest)
 
+    def test_validate_manifest_accepts_typed_implementation_task(self) -> None:
+        manifest = {
+            "run_date": "2026-05-05",
+            "journal_dir": "/tmp/journal",
+            "summary": "1 task planned",
+            "tasks": [
+                {
+                    "id": "O00001",
+                    "title": "Add sample",
+                    "type": "implementation",
+                    "repo_slug": "example",
+                    "source_ref": "tasks/O00001_add_sample.md",
+                    "filename": "O00001_add_sample.md",
+                    "max_time_minutes": 120,
+                    "complexity": "small",
+                }
+            ],
+            "skipped": [],
+            "notes": "stub",
+        }
+
+        validate_manifest(manifest)
+
     def test_validate_manifest_rejects_missing_or_invalid_required_fields(self) -> None:
         with self.assertRaisesRegex(ValueError, "summary"):
             validate_manifest(
@@ -83,6 +106,29 @@ class PlannerTests(unittest.TestCase):
                     "run_date": "2026-05-03",
                     "journal_dir": "/tmp/journal",
                     "tasks": [],
+                    "skipped": [],
+                    "notes": "stub",
+                }
+            )
+
+        with self.assertRaisesRegex(ValueError, "max_time_minutes"):
+            validate_manifest(
+                {
+                    "run_date": "2026-05-05",
+                    "journal_dir": "/tmp/journal",
+                    "summary": "1 task planned",
+                    "tasks": [
+                        {
+                            "id": "O00001",
+                            "title": "Add sample",
+                            "type": "implementation",
+                            "repo_slug": "example",
+                            "source_ref": "tasks/O00001_add_sample.md",
+                            "filename": "O00001_add_sample.md",
+                            "max_time_minutes": "120",
+                            "complexity": "small",
+                        }
+                    ],
                     "skipped": [],
                     "notes": "stub",
                 }

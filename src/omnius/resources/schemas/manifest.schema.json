@@ -20,7 +20,46 @@
       "type": "string"
     },
     "tasks": {
-      "type": "array"
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "type",
+          "repo_slug",
+          "source_ref",
+          "filename",
+          "max_time_minutes",
+          "complexity"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "repo_slug": {
+            "type": "string"
+          },
+          "source_ref": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "max_time_minutes": {
+            "type": "integer"
+          },
+          "complexity": {
+            "type": "string"
+          }
+        }
+      }
     },
     "skipped": {
       "type": "array"

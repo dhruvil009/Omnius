@@ -10,6 +10,7 @@ import sys
 from omnius.config import ConfigError, RepoConfig, load_config
 from omnius.dispatcher import initialize_dispatch_log, update_dispatch_log
 from omnius.planner import (
+    build_local_manifest_tasks,
     build_planner_prompt,
     load_planner_prompt_template,
     parse_planner_response,
@@ -124,9 +125,11 @@ def run_command(_args: argparse.Namespace) -> int:
 
         planner_invocation = runner.invoke_planner(task_id="milestone-1-run", prompt=planner_prompt)
         planner_response = _build_manifest_response(
+            workspace_home=workspace_home,
             run_date=run_date,
             journal_dir=journal_dir,
             local_task_entries=local_task_entries,
+            default_task_budget_minutes=config.global_config.default_task_budget_minutes,
             planner_plan_text=planner_invocation.plan_text,
         )
         (journal_dir / "planner_response.json").write_text(planner_response, encoding="utf-8")
@@ -181,17 +184,23 @@ def _render_repos_table(repos: list[RepoConfig]) -> str:
 
 def _build_manifest_response(
     *,
+    workspace_home: Path,
     run_date: str,
     journal_dir: Path,
     local_task_entries: list[object],
+    default_task_budget_minutes: int,
     planner_plan_text: str,
 ) -> str:
+    manifest_tasks = build_local_manifest_tasks(
+        entries=local_task_entries,
+        default_task_budget_minutes=default_task_budget_minutes,
+    )
     payload = {
         "run_date": run_date,
         "journal_dir": str(journal_dir),
-        "summary": f"0 tasks planned from {len(local_task_entries)} local task(s)",
-        "tasks": [],
-        "skipped": [getattr(entry, "task_id") for entry in local_task_entries],
+        "summary": f"{len(manifest_tasks)} task(s) planned from local queue",
+        "tasks": manifest_tasks,
+        "skipped": [],
         "notes": planner_plan_text,
     }
     return json.dumps(payload, indent=2, sort_keys=True) + "\n"

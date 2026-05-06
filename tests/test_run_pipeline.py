@@ -42,6 +42,25 @@ class RunPipelineTests(unittest.TestCase):
             self.assertTrue((journal_dir / "manifest.json").exists())
             self.assertTrue((journal_dir / "dispatch_log.json").exists())
 
+            manifest = json.loads((journal_dir / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["summary"], "1 task(s) planned from local queue")
+            self.assertEqual(manifest["skipped"], [])
+            self.assertEqual(
+                manifest["tasks"],
+                [
+                    {
+                        "id": "O00001",
+                        "title": "Add sample",
+                        "type": "implementation",
+                        "repo_slug": "example",
+                        "source_ref": "tasks/O00001_add_sample.md",
+                        "filename": "O00001_add_sample.md",
+                        "max_time_minutes": 120,
+                        "complexity": "small",
+                    }
+                ],
+            )
+
             dispatch_log = json.loads((journal_dir / "dispatch_log.json").read_text(encoding="utf-8"))
             self.assertEqual(dispatch_log["pipeline"]["status"], "completed")
 
