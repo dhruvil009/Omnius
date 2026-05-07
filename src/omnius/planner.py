@@ -5,7 +5,7 @@ import importlib.resources as resources
 import json
 from pathlib import Path
 
-from omnius.tasks import LocalTaskEntry
+from omnius.tasks import LocalTaskEntry, RecurringTaskEntry
 
 
 @dataclass(frozen=True)
@@ -78,6 +78,15 @@ def validate_manifest(payload: dict[str, object]) -> None:
     _validate_against_schema(load_manifest_schema(), payload, path="manifest")
 
 
+def choose_planner_response(*, planner_output: str, fallback_manifest_response: str) -> str:
+    try:
+        manifest = parse_planner_response(planner_output)
+        validate_manifest(manifest)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return fallback_manifest_response
+    return planner_output
+
+
 def build_local_manifest_tasks(
     *,
     entries: list[LocalTaskEntry],
@@ -96,6 +105,32 @@ def build_local_manifest_tasks(
                 filename=entry.filename,
                 max_time_minutes=default_task_budget_minutes,
                 complexity="small",
+            ).as_dict()
+        )
+    return manifest_tasks
+
+
+def build_manifest_tasks(
+    *,
+    local_entries: list[LocalTaskEntry],
+    recurring_entries: list[RecurringTaskEntry],
+    default_task_budget_minutes: int,
+) -> list[dict[str, object]]:
+    manifest_tasks = build_local_manifest_tasks(
+        entries=local_entries,
+        default_task_budget_minutes=default_task_budget_minutes,
+    )
+    for entry in recurring_entries:
+        manifest_tasks.append(
+            ManifestTask(
+                task_id=entry.task_id,
+                title=entry.title,
+                task_type=entry.task_type,
+                repo_slug=entry.repo_slug,
+                source_ref=str(Path("tasks") / "recurring" / entry.filename),
+                filename=entry.filename,
+                max_time_minutes=entry.max_time_minutes or default_task_budget_minutes,
+                complexity=entry.complexity,
             ).as_dict()
         )
     return manifest_tasks

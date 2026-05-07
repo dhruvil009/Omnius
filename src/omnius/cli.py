@@ -10,15 +10,16 @@ import sys
 from omnius.config import ConfigError, RepoConfig, load_config
 from omnius.dispatcher import dispatch_manifest, initialize_dispatch_log, update_dispatch_log
 from omnius.planner import (
-    build_local_manifest_tasks,
+    build_manifest_tasks,
     build_planner_prompt,
+    choose_planner_response,
     load_planner_prompt_template,
     parse_planner_response,
     validate_manifest,
 )
+from omnius.prefetch import collect_prefetch_snapshot
 from omnius.preflight import run_preflight
 from omnius.runners import get_runner
-from omnius.tasks import load_local_task_entries, render_local_tasks_section
 from omnius.workspace import bootstrap_workspace
 
 
@@ -109,28 +110,36 @@ def run_command(_args: argparse.Namespace) -> int:
             )
             return 1
 
-        local_task_entries = load_local_task_entries(workspace_home)
+        prefetch_snapshot = collect_prefetch_snapshot(
+            workspace_home,
+            today=run_started_at.date(),
+        )
         planner_prompt = build_planner_prompt(
             template=load_planner_prompt_template(),
             run_date=run_date,
             journal_dir=str(journal_dir),
             repos_table=_render_repos_table(config.repos),
-            local_tasks=render_local_tasks_section(local_task_entries),
-            recurring_tasks="<none>",
+            local_tasks=prefetch_snapshot.local_tasks_section,
+            recurring_tasks=prefetch_snapshot.recurring_tasks_section,
             github_issues="<none>",
             pr_review_comments="<none>",
-            pending_approval="<none>",
+            pending_approval=prefetch_snapshot.pending_approval_section,
         )
         (journal_dir / "planner_prompt.md").write_text(planner_prompt, encoding="utf-8")
 
         planner_invocation = runner.invoke_planner(task_id="milestone-1-run", prompt=planner_prompt)
-        planner_response = _build_manifest_response(
+        synthesized_planner_response = _build_manifest_response(
             workspace_home=workspace_home,
             run_date=run_date,
             journal_dir=journal_dir,
-            local_task_entries=local_task_entries,
+            local_task_entries=prefetch_snapshot.local_task_entries,
+            due_recurring_task_entries=prefetch_snapshot.due_recurring_task_entries,
             default_task_budget_minutes=config.global_config.default_task_budget_minutes,
             planner_plan_text=planner_invocation.plan_text,
+        )
+        planner_response = choose_planner_response(
+            planner_output=planner_invocation.plan_text,
+            fallback_manifest_response=synthesized_planner_response,
         )
         (journal_dir / "planner_response.json").write_text(planner_response, encoding="utf-8")
 
@@ -143,6 +152,14 @@ def run_command(_args: argparse.Namespace) -> int:
                 "planner": {
                     "task_id": planner_invocation.task_id,
                     "runner_name": planner_invocation.runner_name,
+                    "used_runner_output": planner_response == planner_invocation.plan_text,
+                    "recurring_state": {
+                        "suspect_path": (
+                            str(prefetch_snapshot.recurring_state_suspect_path)
+                            if prefetch_snapshot.recurring_state_suspect_path is not None
+                            else None
+                        )
+                    },
                 }
             },
         )
@@ -201,17 +218,23 @@ def _build_manifest_response(
     run_date: str,
     journal_dir: Path,
     local_task_entries: list[object],
+    due_recurring_task_entries: list[object],
     default_task_budget_minutes: int,
     planner_plan_text: str,
 ) -> str:
-    manifest_tasks = build_local_manifest_tasks(
-        entries=local_task_entries,
+    manifest_tasks = build_manifest_tasks(
+        local_entries=local_task_entries,
+        recurring_entries=due_recurring_task_entries,
         default_task_budget_minutes=default_task_budget_minutes,
+    )
+    summary = _build_manifest_summary(
+        local_count=len(local_task_entries),
+        recurring_count=len(due_recurring_task_entries),
     )
     payload = {
         "run_date": run_date,
         "journal_dir": str(journal_dir),
-        "summary": f"{len(manifest_tasks)} task(s) planned from local queue",
+        "summary": summary,
         "tasks": manifest_tasks,
         "skipped": [],
         "notes": planner_plan_text,
@@ -221,6 +244,15 @@ def _build_manifest_response(
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _build_manifest_summary(*, local_count: int, recurring_count: int) -> str:
+    total_count = local_count + recurring_count
+    if recurring_count == 0:
+        return f"{total_count} task(s) planned from local queue"
+    if local_count == 0:
+        return f"{total_count} task(s) planned from recurring queue"
+    return f"{total_count} task(s) planned from local and recurring queues"
 
 
 def _finalize_pipeline_failure(

@@ -74,6 +74,122 @@ class RunPipelineTests(unittest.TestCase):
             self.assertFalse((home / "tasks" / "O00001_add_sample.md").exists())
             self.assertFalse((repo / ".omnius" / "worktrees" / journal_dir.parent.name / "O00001").exists())
 
+    def test_run_command_populates_prompt_and_manifest_with_due_recurring_and_pending_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            home = tmp_path / ".omnius"
+            repo = self._create_repo_with_origin(tmp_path)
+
+            self._write_config(home=home, repo=repo)
+            self._write_local_task(home)
+            self._write_recurring_task(home)
+            self._write_pending_approval_task(home)
+            fake_bin, fake_codex = self._write_fake_run_binaries(tmp_path)
+
+            result = self._run_cli(
+                home=home,
+                fake_bin=fake_bin,
+                extra_env={"OMNIUS_CODEX_BIN": str(fake_codex)},
+            )
+
+            journals = sorted((home / "journal").rglob("dispatch_log.json"))
+            self.assertEqual(len(journals), 1)
+
+            journal_dir = journals[0].parent
+            planner_prompt = (journal_dir / "planner_prompt.md").read_text(encoding="utf-8")
+            manifest = json.loads((journal_dir / "manifest.json").read_text(encoding="utf-8"))
+
+            self.assertIn("RECURRING_TASKS\n", planner_prompt)
+            self.assertIn("R00001", planner_prompt)
+            self.assertIn("PENDING_APPROVAL\n", planner_prompt)
+            self.assertIn("proposed_follow_up.md", planner_prompt)
+            self.assertEqual(manifest["summary"], "2 task(s) planned from local and recurring queues")
+            self.assertEqual(
+                manifest["tasks"],
+                [
+                    {
+                        "id": "O00001",
+                        "title": "Add sample",
+                        "type": "implementation",
+                        "repo_slug": "example",
+                        "source_ref": "tasks/O00001_add_sample.md",
+                        "filename": "O00001_add_sample.md",
+                        "max_time_minutes": 120,
+                        "complexity": "small",
+                    },
+                    {
+                        "id": "R00001",
+                        "title": "Daily cleanup",
+                        "type": "maintenance",
+                        "repo_slug": "example",
+                        "source_ref": "tasks/recurring/R00001_daily_cleanup.md",
+                        "filename": "R00001_daily_cleanup.md",
+                        "max_time_minutes": 45,
+                        "complexity": "medium",
+                    },
+                ],
+            )
+            self.assertTrue((journal_dir / "planner_response.json").exists())
+
+    def test_run_command_falls_back_to_local_manifest_when_planner_output_is_not_a_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            home = tmp_path / ".omnius"
+            repo = self._create_repo_with_origin(tmp_path)
+
+            self._write_config(home=home, repo=repo)
+            self._write_local_task(home)
+            fake_bin, fake_codex = self._write_fake_run_binaries(tmp_path)
+
+            result = self._run_cli(
+                home=home,
+                fake_bin=fake_bin,
+                extra_env={"OMNIUS_CODEX_BIN": str(fake_codex)},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            journals = sorted((home / "journal").rglob("dispatch_log.json"))
+            self.assertEqual(len(journals), 1)
+            journal_dir = journals[0].parent
+            planner_response = json.loads((journal_dir / "planner_response.json").read_text(encoding="utf-8"))
+            manifest = json.loads((journal_dir / "manifest.json").read_text(encoding="utf-8"))
+            dispatch_log = json.loads((journal_dir / "dispatch_log.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(planner_response, manifest)
+            self.assertEqual(manifest["summary"], "1 task(s) planned from local queue")
+            self.assertEqual([task["id"] for task in manifest["tasks"]], ["O00001"])
+            self.assertEqual(dispatch_log["pipeline"]["status"], "completed")
+            self.assertFalse(dispatch_log["planner"]["used_runner_output"])
+
+    def test_run_command_surfaces_quarantined_recurring_state_in_prompt_and_dispatch_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            home = tmp_path / ".omnius"
+            repo = self._create_repo_with_origin(tmp_path)
+
+            self._write_config(home=home, repo=repo)
+            self._write_local_task(home)
+            self._write_recurring_task(home)
+            self._write_corrupt_recurring_state(home)
+            fake_bin, fake_codex = self._write_fake_run_binaries(tmp_path)
+
+            result = self._run_cli(
+                home=home,
+                fake_bin=fake_bin,
+                extra_env={"OMNIUS_CODEX_BIN": str(fake_codex)},
+            )
+
+            journals = sorted((home / "journal").rglob("dispatch_log.json"))
+            self.assertEqual(len(journals), 1)
+            journal_dir = journals[0].parent
+            planner_prompt = (journal_dir / "planner_prompt.md").read_text(encoding="utf-8")
+            dispatch_log = json.loads((journal_dir / "dispatch_log.json").read_text(encoding="utf-8"))
+
+            self.assertIn("recurring_state.json.suspect.", planner_prompt)
+            self.assertIn("recurring_state", dispatch_log["planner"])
+            self.assertIn("suspect_path", dispatch_log["planner"]["recurring_state"])
+            self.assertIn("recurring_state.json.suspect.", dispatch_log["planner"]["recurring_state"]["suspect_path"])
+
     def test_run_command_returns_nonzero_when_worker_result_is_non_success(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -246,6 +362,37 @@ class RunPipelineTests(unittest.TestCase):
             "## Completed\n",
             encoding="utf-8",
         )
+
+    def _write_recurring_task(self, home: Path) -> None:
+        (home / "tasks" / "recurring").mkdir(parents=True, exist_ok=True)
+        (home / "tasks" / "recurring" / "R00001_daily_cleanup.md").write_text(
+            textwrap.dedent(
+                """
+                ---
+                title: Daily cleanup
+                repo: example
+                schedule: daily
+                type: maintenance
+                complexity: medium
+                max_time_minutes: 45
+                ---
+                Recurring body
+                """
+            ).strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def _write_pending_approval_task(self, home: Path) -> None:
+        (home / "tasks" / "pending_approval").mkdir(parents=True, exist_ok=True)
+        (home / "tasks" / "pending_approval" / "proposed_follow_up.md").write_text(
+            "Needs review\n",
+            encoding="utf-8",
+        )
+
+    def _write_corrupt_recurring_state(self, home: Path) -> None:
+        (home / "state").mkdir(parents=True, exist_ok=True)
+        (home / "state" / "recurring_state.json").write_text("{not-json", encoding="utf-8")
 
     def _write_fake_run_binaries(self, tmp_path: Path) -> tuple[Path, Path]:
         fake_bin = tmp_path / "bin"
