@@ -36,7 +36,7 @@ class WorkerRequest:
     journal_dir: Path
     branch: str
     base_ref: str
-    max_time_minutes: int
+    max_time_minutes: float
 
 
 @dataclass(frozen=True)
