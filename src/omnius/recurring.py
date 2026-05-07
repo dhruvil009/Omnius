@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 import re
 import shutil
+import tempfile
 
 from omnius.tasks import RecurringTaskEntry
 
@@ -44,7 +46,18 @@ def load_recurring_state(
 
 
 def save_recurring_state(home: Path, state: dict[str, dict[str, object]]) -> None:
-    _state_path(home).write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    state_path = _state_path(home)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temp_name = tempfile.mkstemp(
+        dir=state_path.parent,
+        prefix=f"{state_path.name}.",
+        suffix=".tmp",
+        text=True,
+    )
+    os.close(descriptor)
+    temp_path = Path(temp_name)
+    temp_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(temp_path, state_path)
 
 
 def record_recurring_task_result(
