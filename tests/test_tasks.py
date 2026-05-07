@@ -3,7 +3,13 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from omnius.tasks import archive_local_task_success, load_local_task_entries, render_local_tasks_section
+from omnius.tasks import (
+    RecurringTaskEntry,
+    archive_local_task_success,
+    load_local_task_entries,
+    load_recurring_task_entries,
+    render_local_tasks_section,
+)
 from omnius.workspace import bootstrap_workspace
 
 
@@ -142,3 +148,206 @@ class TaskParsingTests(unittest.TestCase):
         self.assertTrue(archived_task_exists)
         self.assertNotIn("- O00001: Add sample [file: O00001_add_sample.md]", updated_index)
         self.assertIn("- 2026-05-05: O00001: Add sample [file: O00001_add_sample.md]", updated_index)
+
+
+class RecurringTaskParsingTests(unittest.TestCase):
+    def test_load_recurring_task_entries_reads_recurring_markdown_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            bootstrap_workspace(home)
+            (home / "tasks" / "recurring" / "R00001_review_backlog.md").write_text(
+                textwrap.dedent(
+                    """
+                    ---
+                    title: Review backlog
+                    repo: example
+                    schedule: weekly:wed
+                    type: maintenance
+                    complexity: medium
+                    max_time_minutes: 45
+                    retry_on_failure: immediate
+                    only_if_last_succeeded: true
+                    ---
+                    Check stale issues and triage them.
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+            (home / "tasks" / "recurring" / "notes.md").write_text("ignore me\n", encoding="utf-8")
+
+            entries = load_recurring_task_entries(home)
+
+        self.assertEqual(
+            entries,
+            [
+                RecurringTaskEntry(
+                    task_id="R00001",
+                    filename="R00001_review_backlog.md",
+                    title="Review backlog",
+                    repo_slug="example",
+                    schedule="weekly:wed",
+                    task_type="maintenance",
+                    complexity="medium",
+                    max_time_minutes=45,
+                    retry_on_failure="immediate",
+                    only_if_last_succeeded=True,
+                    body=textwrap.dedent(
+                        """
+                        ---
+                        title: Review backlog
+                        repo: example
+                        schedule: weekly:wed
+                        type: maintenance
+                        complexity: medium
+                        max_time_minutes: 45
+                        retry_on_failure: immediate
+                        only_if_last_succeeded: true
+                        ---
+                        Check stale issues and triage them.
+                        """
+                    ).strip()
+                    + "\n",
+                )
+            ],
+        )
+
+    def test_load_recurring_task_entries_applies_defaults_for_optional_frontmatter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            bootstrap_workspace(home)
+            (home / "tasks" / "recurring" / "R00002_cleanup.md").write_text(
+                textwrap.dedent(
+                    """
+                    ---
+                    title: Cleanup
+                    repo: example
+                    schedule: daily:weekdays
+                    ---
+                    Light cleanup.
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            [entry] = load_recurring_task_entries(home)
+
+        self.assertEqual(entry.task_id, "R00002")
+        self.assertEqual(entry.task_type, "implementation")
+        self.assertEqual(entry.complexity, "small")
+        self.assertIsNone(entry.max_time_minutes)
+        self.assertEqual(entry.retry_on_failure, "next_run")
+        self.assertFalse(entry.only_if_last_succeeded)
+
+    def test_load_recurring_task_entries_requires_schedule_frontmatter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            bootstrap_workspace(home)
+            (home / "tasks" / "recurring" / "R00003_missing_schedule.md").write_text(
+                textwrap.dedent(
+                    """
+                    ---
+                    title: Missing schedule
+                    repo: example
+                    ---
+                    Broken task.
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "schedule"):
+                load_recurring_task_entries(home)
+
+    def test_load_recurring_task_entries_rejects_unknown_retry_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            bootstrap_workspace(home)
+            (home / "tasks" / "recurring" / "R00004_invalid_retry.md").write_text(
+                textwrap.dedent(
+                    """
+                    ---
+                    title: Invalid retry
+                    repo: example
+                    schedule: daily
+                    retry_on_failure: true
+                    ---
+                    Broken task.
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "retry_on_failure"):
+                load_recurring_task_entries(home)
+
+    def test_load_recurring_task_entries_rejects_non_spec_schedule_forms(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            bootstrap_workspace(home)
+            (home / "tasks" / "recurring" / "R00005_invalid_schedule.md").write_text(
+                textwrap.dedent(
+                    """
+                    ---
+                    title: Invalid schedule
+                    repo: example
+                    schedule: weekdays
+                    ---
+                    Broken task.
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "schedule"):
+                load_recurring_task_entries(home)
+
+    def test_load_recurring_task_entries_rejects_non_positive_max_time_minutes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            bootstrap_workspace(home)
+            (home / "tasks" / "recurring" / "R00006_invalid_budget.md").write_text(
+                textwrap.dedent(
+                    """
+                    ---
+                    title: Invalid budget
+                    repo: example
+                    schedule: daily
+                    max_time_minutes: 0
+                    ---
+                    Broken task.
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, r"Task R00006.*max_time_minutes"):
+                load_recurring_task_entries(home)
+
+    def test_load_recurring_task_entries_rejects_malformed_max_time_minutes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            bootstrap_workspace(home)
+            (home / "tasks" / "recurring" / "R00007_invalid_budget.md").write_text(
+                textwrap.dedent(
+                    """
+                    ---
+                    title: Invalid budget
+                    repo: example
+                    schedule: daily
+                    max_time_minutes: forty-five
+                    ---
+                    Broken task.
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, r"Task R00007.*max_time_minutes"):
+                load_recurring_task_entries(home)
