@@ -9,6 +9,7 @@ import sys
 
 from omnius.config import ConfigError, RepoConfig, load_config
 from omnius.costs import SessionCostRecord, write_session_cost_record
+from omnius.dayprep import run_dayprep
 from omnius.dispatcher import dispatch_manifest, initialize_dispatch_log, update_dispatch_log
 from omnius.planner import (
     build_manifest_tasks,
@@ -190,6 +191,23 @@ def run_command(_args: argparse.Namespace) -> int:
             journal_dir=journal_dir,
             dispatch_log_path=dispatch_log_path,
             planner_usage=planner_invocation.usage,
+        )
+        dayprep_result = run_dayprep(
+            runner=runner,
+            workspace_home=workspace_home,
+            journal_dir=journal_dir,
+            dispatch_log_path=dispatch_log_path,
+        )
+        update_dispatch_log(
+            dispatch_log_path,
+            patch={
+                "dayprep": {
+                    "brief_path": str(dayprep_result.brief_path),
+                    "latest_brief_path": str(dayprep_result.latest_brief_path),
+                    "used_fallback": dayprep_result.used_fallback,
+                    "warning_banner": dayprep_result.warning_banner,
+                }
+            },
         )
     except Exception as exc:
         return _finalize_pipeline_failure(

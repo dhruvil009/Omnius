@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 
 from omnius.runners.base import (
+    DayPrepInvocation,
     PlannerInvocation,
     RunnerAdapter,
     RunnerCapability,
@@ -50,6 +51,13 @@ class CodexRunner(RunnerAdapter):
             task_id=task_id,
             prompt=prompt,
             plan_text=f"codex placeholder plan for {task_id}: {prompt}",
+        )
+
+    def invoke_dayprep(self, *, task_id: str, prompt: str) -> DayPrepInvocation:
+        return DayPrepInvocation(
+            runner_name=self.name,
+            task_id=task_id,
+            brief_markdown=f"# Omnius — Day Prep\n\ncodex placeholder brief for {task_id}\n",
         )
 
     def build_worker_command(self, request: WorkerRequest) -> list[str]:

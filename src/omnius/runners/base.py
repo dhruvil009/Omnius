@@ -40,6 +40,14 @@ class PlannerInvocation:
 
 
 @dataclass(frozen=True)
+class DayPrepInvocation:
+    runner_name: str
+    task_id: str
+    brief_markdown: str
+    usage: UsageStats | None = None
+
+
+@dataclass(frozen=True)
 class WorkerRequest:
     task_id: str
     prompt: str
@@ -83,6 +91,10 @@ class RunnerAdapter(ABC):
 
     @abstractmethod
     def build_worker_command(self, request: WorkerRequest) -> list[str]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def invoke_dayprep(self, *, task_id: str, prompt: str) -> DayPrepInvocation:
         raise NotImplementedError
 
 

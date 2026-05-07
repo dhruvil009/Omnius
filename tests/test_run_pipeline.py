@@ -130,6 +130,11 @@ class RunPipelineTests(unittest.TestCase):
                 ],
             )
             self.assertTrue((journal_dir / "planner_response.json").exists())
+            self.assertTrue((journal_dir / "daily_brief.md").exists())
+            self.assertEqual(
+                (home / "daily_brief.md").read_text(encoding="utf-8"),
+                (journal_dir / "daily_brief.md").read_text(encoding="utf-8"),
+            )
 
     def test_run_command_falls_back_to_local_manifest_when_planner_output_is_not_a_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
