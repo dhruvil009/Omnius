@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 import json
 from pathlib import Path
 import re
@@ -45,6 +45,35 @@ def load_recurring_state(
 
 def save_recurring_state(home: Path, state: dict[str, dict[str, object]]) -> None:
     _state_path(home).write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def record_recurring_task_result(
+    home: Path,
+    *,
+    task_id: str,
+    run_date: date,
+    status: str,
+    max_consecutive_failures: int,
+) -> None:
+    state = load_recurring_state(home)
+    state_entry = dict(state.get(task_id, {}))
+    state_entry["last_attempted"] = run_date.isoformat()
+    state_entry["last_status"] = status
+
+    if status == "SUCCESS":
+        state_entry["last_succeeded"] = run_date.isoformat()
+        state_entry["consecutive_failures"] = 0
+        state_entry.pop("quarantined_until", None)
+    else:
+        consecutive_failures = _parse_consecutive_failures(state_entry) + 1
+        state_entry["consecutive_failures"] = consecutive_failures
+        if consecutive_failures >= max_consecutive_failures:
+            state_entry["quarantined_until"] = (run_date + timedelta(days=7)).isoformat()
+        else:
+            state_entry.pop("quarantined_until", None)
+
+    state[task_id] = state_entry
+    save_recurring_state(home, state)
 
 
 def filter_due_recurring_task_entries(
@@ -128,3 +157,10 @@ def _parse_state_status(state_entry: dict[str, object] | None, key: str) -> str 
     if not isinstance(value, str):
         raise ValueError(f"Recurring state field '{key}' must be a string")
     return value
+
+
+def _parse_consecutive_failures(state_entry: dict[str, object]) -> int:
+    raw_value = state_entry.get("consecutive_failures", 0)
+    if type(raw_value) is not int or raw_value < 0:
+        raise ValueError("Recurring state field 'consecutive_failures' must be a non-negative integer")
+    return raw_value

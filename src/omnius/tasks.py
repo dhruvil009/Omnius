@@ -118,8 +118,57 @@ def archive_local_task_success(
     filename: str,
     run_date: str,
 ) -> None:
+    archived_completed_line = _build_completed_line(task_id=task_id, filename=filename, run_date=run_date, home=home)
+    _relocate_local_task(
+        home=home,
+        task_id=task_id,
+        filename=filename,
+        destination_dir=home / "tasks" / "completed",
+        completed_line=archived_completed_line,
+    )
+
+
+def move_local_task_to_pending_approval(
+    *,
+    home: Path,
+    task_id: str,
+    filename: str,
+) -> None:
+    _relocate_local_task(
+        home=home,
+        task_id=task_id,
+        filename=filename,
+        destination_dir=home / "tasks" / "pending_approval",
+        completed_line=None,
+    )
+
+
+def _build_completed_line(*, task_id: str, filename: str, run_date: str, home: Path) -> str:
+    index_path = home / "tasks.md"
+    index_text = index_path.read_text(encoding="utf-8")
+    try:
+        _, active_and_after = index_text.split("## Active", 1)
+        active_section, _ = active_and_after.split("## Completed", 1)
+    except ValueError as exc:
+        raise ValueError("tasks.md must contain both '## Active' and '## Completed' sections") from exc
+
+    for raw_line in active_section.splitlines():
+        stripped = raw_line.strip()
+        if _matches_task_index_line(stripped, task_id=task_id, filename=filename):
+            return f"- {run_date}: {stripped.removeprefix('- ')}"
+    raise ValueError(f"Could not find active tasks.md entry for {task_id} / {filename}")
+
+
+def _relocate_local_task(
+    *,
+    home: Path,
+    task_id: str,
+    filename: str,
+    destination_dir: Path,
+    completed_line: str | None,
+) -> None:
     source_path = home / "tasks" / filename
-    destination_path = home / "tasks" / "completed" / filename
+    destination_path = destination_dir / filename
     if not source_path.exists():
         raise FileNotFoundError(source_path)
 
@@ -148,14 +197,14 @@ def archive_local_task_success(
     destination_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(source_path), str(destination_path))
 
-    completed_body = after_completed.rstrip("\n")
-    archived_completed_line = f"- {run_date}: {archived_line.removeprefix('- ')}"
-    if completed_body.strip():
-        completed_body = f"{completed_body}\n{archived_completed_line}"
-    else:
-        completed_body = archived_completed_line
-
     active_body = "\n".join(remaining_active_lines).strip("\n")
+    completed_body = after_completed.rstrip("\n")
+    if completed_line is not None:
+        if completed_body.strip():
+            completed_body = f"{completed_body}\n{completed_line}"
+        else:
+            completed_body = completed_line
+
     new_index_text = (
         f"{before_active.rstrip()}\n\n"
         f"## Active\n"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 import json
 import os
 from pathlib import Path
@@ -11,8 +12,9 @@ import time
 import importlib.resources as resources
 
 from omnius.config import OmniusConfig, RepoConfig
+from omnius.recurring import record_recurring_task_result
 from omnius.runners.base import RunnerAdapter, WorkerRequest
-from omnius.tasks import archive_local_task_success
+from omnius.tasks import archive_local_task_success, move_local_task_to_pending_approval
 
 
 def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
@@ -45,6 +47,10 @@ def initialize_dispatch_log(
             "runner": runner_name,
             "repo_slug": repo_slug,
             "branch": branch,
+            "circuit_breaker": {
+                "state": "closed",
+                "consecutive_failures": 0,
+            },
         },
         "tasks": {},
     }
@@ -97,8 +103,40 @@ def dispatch_manifest(
     dispatch_log_path: Path,
 ) -> dict[str, object]:
     repo_lookup = {repo.slug: repo for repo in config.repos}
+    run_date = date.fromisoformat(str(manifest["run_date"]))
+    failure_threshold = config.global_config.max_consecutive_failures
+    consecutive_failures = 0
+    elapsed_pipeline_seconds = 0.0
+    update_dispatch_log(
+        dispatch_log_path,
+        patch={
+            "pipeline": {
+                "circuit_breaker": {
+                    "consecutive_failures": consecutive_failures,
+                    "state": "closed",
+                    "threshold": failure_threshold,
+                }
+            }
+        },
+    )
     for raw_task in manifest.get("tasks", []):
         task = _parse_dispatch_task(raw_task)
+        remaining_budget_minutes = config.global_config.pipeline_budget_minutes - (elapsed_pipeline_seconds / 60)
+        if remaining_budget_minutes <= 0:
+            task_state = _build_skipped_task_state(task=task, status="BUDGET_EXHAUSTED")
+            update_dispatch_log(
+                dispatch_log_path,
+                patch={"tasks": {task.task_id: task_state}},
+            )
+            continue
+        if consecutive_failures >= failure_threshold:
+            task_state = _build_skipped_task_state(task=task, status="CIRCUIT_BREAKER_SKIPPED")
+            update_dispatch_log(
+                dispatch_log_path,
+                patch={"tasks": {task.task_id: task_state}},
+            )
+            continue
+
         repo = repo_lookup[task.repo_slug]
         task_state = _dispatch_one_task(
             task=task,
@@ -106,10 +144,28 @@ def dispatch_manifest(
             runner=runner,
             workspace_home=workspace_home,
             journal_dir=journal_dir,
+            max_time_minutes=min(task.max_time_minutes, remaining_budget_minutes),
         )
+        elapsed_pipeline_seconds += float(task_state["duration_seconds"])
+        _apply_task_side_effects(
+            task=task,
+            task_state=task_state,
+            workspace_home=workspace_home,
+            run_date=run_date,
+            failure_threshold=failure_threshold,
+        )
+        consecutive_failures = 0 if task_state["status"] == "SUCCESS" else consecutive_failures + 1
         update_dispatch_log(
             dispatch_log_path,
-            patch={"tasks": {task.task_id: task_state}},
+            patch={
+                "tasks": {task.task_id: task_state},
+                "pipeline": {
+                    "circuit_breaker": {
+                        "consecutive_failures": consecutive_failures,
+                        "state": "open" if consecutive_failures >= failure_threshold else "closed",
+                    }
+                },
+            },
         )
     return load_dispatch_log(dispatch_log_path)
 
@@ -121,6 +177,7 @@ def _dispatch_one_task(
     runner: RunnerAdapter,
     workspace_home: Path,
     journal_dir: Path,
+    max_time_minutes: float,
 ) -> dict[str, object]:
     started_at = time.monotonic()
     ended_at_wall_clock: str | None = None
@@ -152,7 +209,7 @@ def _dispatch_one_task(
             journal_dir=journal_dir,
             branch=branch,
             base_ref=base_ref,
-            max_time_minutes=task.max_time_minutes,
+            max_time_minutes=max_time_minutes,
         )
         _run_worker_process(
             runner=runner,
@@ -165,13 +222,6 @@ def _dispatch_one_task(
             stdout_path=stdout_path,
             branch=branch,
         )
-        if task_state["status"] == "SUCCESS":
-            archive_local_task_success(
-                home=workspace_home,
-                task_id=task.task_id,
-                filename=task.filename,
-                run_date=journal_dir.parent.name,
-            )
         ended_at_wall_clock = _now_iso()
     except _WorkerTimeout:
         task_state = {
@@ -200,6 +250,50 @@ def _dispatch_one_task(
     task_state["end"] = ended_at_wall_clock
     task_state["duration_seconds"] = round(duration_seconds, 3)
     return task_state
+
+
+def _apply_task_side_effects(
+    *,
+    task: DispatchTask,
+    task_state: dict[str, object],
+    workspace_home: Path,
+    run_date: date,
+    failure_threshold: int,
+) -> None:
+    status = str(task_state["status"])
+    if task.task_id.startswith("O"):
+        if status == "SUCCESS":
+            archive_local_task_success(
+                home=workspace_home,
+                task_id=task.task_id,
+                filename=task.filename,
+                run_date=run_date.isoformat(),
+            )
+        elif status == "PARTIAL":
+            move_local_task_to_pending_approval(
+                home=workspace_home,
+                task_id=task.task_id,
+                filename=task.filename,
+            )
+        return
+
+    if task.task_id.startswith("R"):
+        record_recurring_task_result(
+            workspace_home,
+            task_id=task.task_id,
+            run_date=run_date,
+            status=status,
+            max_consecutive_failures=failure_threshold,
+        )
+
+
+def _build_skipped_task_state(*, task: DispatchTask, status: str) -> dict[str, object]:
+    return {
+        "id": task.task_id,
+        "title": task.title,
+        "repo_slug": task.repo_slug,
+        "status": status,
+    }
 
 
 def _prepare_worktree(*, repo_path: Path, base_branch: str, branch: str, worktree_path: Path) -> None:

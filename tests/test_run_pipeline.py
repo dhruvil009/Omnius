@@ -218,6 +218,95 @@ class RunPipelineTests(unittest.TestCase):
             self.assertTrue((home / "tasks" / "O00001_add_sample.md").exists())
             self.assertFalse((home / "tasks" / "completed" / "O00001_add_sample.md").exists())
 
+    def test_run_command_moves_partial_local_task_to_pending_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            home = tmp_path / ".omnius"
+            repo = self._create_repo_with_origin(tmp_path)
+
+            self._write_config(home=home, repo=repo)
+            self._write_local_task(home)
+            fake_bin, fake_codex = self._write_fake_run_binaries(tmp_path)
+
+            result = self._run_cli(
+                home=home,
+                fake_bin=fake_bin,
+                extra_env={
+                    "OMNIUS_CODEX_BIN": str(fake_codex),
+                    "OMNIUS_FAKE_CODEX_RESULT": "PARTIAL",
+                },
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            journals = sorted((home / "journal").rglob("dispatch_log.json"))
+            self.assertEqual(len(journals), 1)
+            dispatch_log = json.loads(journals[0].read_text(encoding="utf-8"))
+
+            self.assertEqual(dispatch_log["tasks"]["O00001"]["status"], "PARTIAL")
+            self.assertFalse((home / "tasks" / "O00001_add_sample.md").exists())
+            self.assertTrue((home / "tasks" / "pending_approval" / "O00001_add_sample.md").exists())
+            tasks_index = (home / "tasks.md").read_text(encoding="utf-8")
+            self.assertNotIn("- O00001: Add sample [file: O00001_add_sample.md]", tasks_index)
+
+    def test_run_command_updates_recurring_state_after_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            home = tmp_path / ".omnius"
+            repo = self._create_repo_with_origin(tmp_path)
+
+            self._write_config(home=home, repo=repo)
+            self._write_recurring_task(home)
+            fake_bin, fake_codex = self._write_fake_run_binaries(tmp_path)
+
+            result = self._run_cli(
+                home=home,
+                fake_bin=fake_bin,
+                extra_env={"OMNIUS_CODEX_BIN": str(fake_codex)},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            recurring_state = json.loads((home / "state" / "recurring_state.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                recurring_state["R00001"],
+                {
+                    "consecutive_failures": 0,
+                    "last_attempted": "2026-05-06",
+                    "last_status": "SUCCESS",
+                    "last_succeeded": "2026-05-06",
+                },
+            )
+
+    def test_run_command_trips_circuit_breaker_and_skips_remaining_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            home = tmp_path / ".omnius"
+            repo = self._create_repo_with_origin(tmp_path)
+
+            self._write_config(home=home, repo=repo, max_consecutive_failures=1)
+            self._write_local_task(home)
+            self._write_second_local_task(home)
+            fake_bin, fake_codex = self._write_fake_run_binaries(tmp_path)
+
+            result = self._run_cli(
+                home=home,
+                fake_bin=fake_bin,
+                extra_env={
+                    "OMNIUS_CODEX_BIN": str(fake_codex),
+                    "OMNIUS_FAKE_CODEX_RESULTS": "FAILURE,SUCCESS",
+                    "OMNIUS_FAKE_CODEX_SEQUENCE_FILE": str(tmp_path / "fake-codex-sequence.txt"),
+                },
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            journals = sorted((home / "journal").rglob("dispatch_log.json"))
+            self.assertEqual(len(journals), 1)
+            dispatch_log = json.loads(journals[0].read_text(encoding="utf-8"))
+
+            self.assertEqual(dispatch_log["tasks"]["O00001"]["status"], "FAILURE")
+            self.assertEqual(dispatch_log["tasks"]["O00002"]["status"], "CIRCUIT_BREAKER_SKIPPED")
+            self.assertEqual(dispatch_log["pipeline"]["circuit_breaker"]["state"], "open")
+            self.assertEqual(dispatch_log["pipeline"]["circuit_breaker"]["consecutive_failures"], 1)
+
     def test_run_command_exits_nonzero_without_traceback_when_config_has_no_repos(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -287,7 +376,7 @@ class RunPipelineTests(unittest.TestCase):
             env=env,
         )
 
-    def _write_config(self, *, home: Path, repo: Optional[Path]) -> None:
+    def _write_config(self, *, home: Path, repo: Optional[Path], max_consecutive_failures: int = 3) -> None:
         home.mkdir(parents=True, exist_ok=True)
         repos_block = ""
         if repo is not None:
@@ -310,7 +399,7 @@ class RunPipelineTests(unittest.TestCase):
                 pipeline_cron = "0 21 * * 0-4"
                 pipeline_budget_minutes = 540
                 default_task_budget_minutes = 120
-                max_consecutive_failures = 3
+                max_consecutive_failures = {max_consecutive_failures}
                 notification_backend = "none"
 
                 [runner]
@@ -345,6 +434,25 @@ class RunPipelineTests(unittest.TestCase):
         (tasks_dir / "O00001_add_sample.md").write_text(
             "---\n"
             "title: Add sample\n"
+            "repo: example\n"
+            "---\n"
+            "Task body\n",
+            encoding="utf-8",
+        )
+
+    def _write_second_local_task(self, home: Path) -> None:
+        (home / "tasks.md").write_text(
+            "## Format\n"
+            "- <ID>: <Title> [file: <filename>.md]\n\n"
+            "## Active\n"
+            "- O00001: Add sample [file: O00001_add_sample.md]\n"
+            "- O00002: Follow up [file: O00002_follow_up.md]\n\n"
+            "## Completed\n",
+            encoding="utf-8",
+        )
+        (home / "tasks" / "O00002_follow_up.md").write_text(
+            "---\n"
+            "title: Follow up\n"
             "repo: example\n"
             "---\n"
             "Task body\n",
@@ -482,15 +590,29 @@ class RunPipelineTests(unittest.TestCase):
                     echo "missing prompt payload" >&2
                     exit 17
                 }
-                case "${OMNIUS_FAKE_CODEX_RESULT:-SUCCESS}" in
+                result="${OMNIUS_FAKE_CODEX_RESULT:-SUCCESS}"
+                if [ "${OMNIUS_FAKE_CODEX_RESULTS:-}" != "" ]; then
+                    sequence_file="${OMNIUS_FAKE_CODEX_SEQUENCE_FILE:-${TMPDIR:-/tmp}/omnius_fake_codex_sequence}"
+                    index="0"
+                    if [ -f "$sequence_file" ]; then
+                        index="$(cat "$sequence_file")"
+                    fi
+                    next_result="$(printf '%s' "$OMNIUS_FAKE_CODEX_RESULTS" | cut -d, -f $((index + 1)))"
+                    result="$next_result"
+                    printf '%s' $((index + 1)) > "$sequence_file"
+                fi
+                case "$result" in
                     SUCCESS)
                         printf '{"status":"SUCCESS","branch":"%s","summary":"done"}\n' "$OMNIUS_BRANCH"
+                        ;;
+                    PARTIAL)
+                        printf '{"status":"PARTIAL","branch":"%s","notes":"needs follow-up"}\n' "$OMNIUS_BRANCH"
                         ;;
                     FAILURE)
                         printf '{"status":"FAILURE","error":"worker failed"}\n'
                         ;;
                     *)
-                        echo "unsupported fake result: ${OMNIUS_FAKE_CODEX_RESULT}" >&2
+                        echo "unsupported fake result: $result" >&2
                         exit 18
                         ;;
                 esac

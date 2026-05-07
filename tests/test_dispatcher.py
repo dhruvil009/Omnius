@@ -26,6 +26,7 @@ class DispatchLogTests(unittest.TestCase):
         self.assertEqual(payload["pipeline"]["runner"], "codex")
         self.assertEqual(payload["pipeline"]["repo_slug"], "example")
         self.assertEqual(payload["pipeline"]["branch"], "main")
+        self.assertEqual(payload["pipeline"]["circuit_breaker"], {"state": "closed", "consecutive_failures": 0})
         self.assertEqual(payload["tasks"], {})
 
     def test_update_dispatch_log_rewrites_atomically_and_preserves_existing_content(self) -> None:
