@@ -218,6 +218,44 @@ class RunPipelineTests(unittest.TestCase):
             self.assertTrue((home / "tasks" / "O00001_add_sample.md").exists())
             self.assertFalse((home / "tasks" / "completed" / "O00001_add_sample.md").exists())
 
+    def test_run_command_records_worker_usage_and_cost_ledgers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            home = tmp_path / ".omnius"
+            repo = self._create_repo_with_origin(tmp_path)
+
+            self._write_config(home=home, repo=repo)
+            self._write_local_task(home)
+            fake_bin, fake_codex = self._write_fake_run_binaries(tmp_path)
+
+            result = self._run_cli(
+                home=home,
+                fake_bin=fake_bin,
+                extra_env={
+                    "OMNIUS_CODEX_BIN": str(fake_codex),
+                    "OMNIUS_FAKE_CODEX_USAGE_JSON": '{"cost_usd":0.18,"turns":47,"input_tokens":142014,"output_tokens":4227,"cache_read_tokens":41022}',
+                },
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            journals = sorted((home / "journal").rglob("dispatch_log.json"))
+            self.assertEqual(len(journals), 1)
+            journal_dir = journals[0].parent
+            dispatch_log = json.loads(journals[0].read_text(encoding="utf-8"))
+
+            self.assertEqual(dispatch_log["tasks"]["O00001"]["cost_usd"], 0.18)
+            self.assertEqual(dispatch_log["tasks"]["O00001"]["turns"], 47)
+            self.assertEqual(
+                dispatch_log["tasks"]["O00001"]["tokens"],
+                {"input": 142014, "output": 4227, "cache_read": 41022},
+            )
+            self.assertEqual(dispatch_log["pipeline"]["total_cost_usd"], 0.18)
+            self.assertTrue((home / "costs" / f"{journal_dir.parent.name}_{journal_dir.name}_O00001.md").exists())
+            self.assertIn(
+                f"| {journal_dir.parent.name} |   1   |   1     | $0.18   |",
+                (home / "costs" / "omnius_cost.md").read_text(encoding="utf-8"),
+            )
+
     def test_run_command_moves_partial_local_task_to_pending_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -601,15 +639,19 @@ class RunPipelineTests(unittest.TestCase):
                     result="$next_result"
                     printf '%s' $((index + 1)) > "$sequence_file"
                 fi
+                usage_suffix=""
+                if [ "${OMNIUS_FAKE_CODEX_USAGE_JSON:-}" != "" ]; then
+                    usage_suffix=',"usage":'"${OMNIUS_FAKE_CODEX_USAGE_JSON}"
+                fi
                 case "$result" in
                     SUCCESS)
-                        printf '{"status":"SUCCESS","branch":"%s","summary":"done"}\n' "$OMNIUS_BRANCH"
+                        printf '{"status":"SUCCESS","branch":"%s","summary":"done"%s}\n' "$OMNIUS_BRANCH" "$usage_suffix"
                         ;;
                     PARTIAL)
-                        printf '{"status":"PARTIAL","branch":"%s","notes":"needs follow-up"}\n' "$OMNIUS_BRANCH"
+                        printf '{"status":"PARTIAL","branch":"%s","notes":"needs follow-up"%s}\n' "$OMNIUS_BRANCH" "$usage_suffix"
                         ;;
                     FAILURE)
-                        printf '{"status":"FAILURE","error":"worker failed"}\n'
+                        printf '{"status":"FAILURE","error":"worker failed"%s}\n' "$usage_suffix"
                         ;;
                     *)
                         echo "unsupported fake result: $result" >&2

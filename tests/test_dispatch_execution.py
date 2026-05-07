@@ -96,6 +96,53 @@ class DispatchExecutionTests(unittest.TestCase):
             )
             self.assertIn(branch, branch_list.stdout)
 
+    def test_dispatch_manifest_records_worker_usage_and_pipeline_total_cost(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo_path = self._create_repo_with_origin(tmp_path)
+            home = self._create_workspace_home(tmp_path)
+            self._write_local_task(home)
+
+            journal_dir = home / "journal" / "2026-05-05" / "2100"
+            journal_dir.mkdir(parents=True, exist_ok=True)
+            dispatch_log_path = journal_dir / "dispatch_log.json"
+            initialize_dispatch_log(
+                dispatch_log_path,
+                pipeline_id="pipeline-20260505-210000",
+                runner_name="fake",
+                repo_slug="example",
+                branch="main",
+            )
+
+            branch = "omnius/2026-05-05/O00001"
+            script_path = self._write_worker_script(
+                tmp_path / "usage-success.sh",
+                textwrap.dedent(
+                    f"""\
+                    printf '{{"status":"SUCCESS","branch":"{branch}","summary":"done","usage":{{"cost_usd":0.18,"turns":47,"input_tokens":142014,"output_tokens":4227,"cache_read_tokens":41022}}}}\\n'
+                    """
+                ),
+            )
+            result = dispatch_manifest(
+                manifest=self._manifest(tasks=[self._local_manifest_task()]),
+                runner=FakeRunner(script_path),
+                config=self._config(repo_path),
+                workspace_home=home,
+                journal_dir=journal_dir,
+                dispatch_log_path=dispatch_log_path,
+            )
+
+            task_state = result["tasks"]["O00001"]
+            self.assertEqual(task_state["cost_usd"], 0.18)
+            self.assertEqual(task_state["turns"], 47)
+            self.assertEqual(
+                task_state["tokens"],
+                {"input": 142014, "output": 4227, "cache_read": 41022},
+            )
+            self.assertEqual(result["pipeline"]["total_cost_usd"], 0.18)
+            self.assertTrue((home / "costs" / "2026-05-05_2100_O00001.md").exists())
+            self.assertTrue((home / "costs" / "omnius_cost.md").exists())
+
     def test_dispatch_manifest_moves_partial_local_task_to_pending_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

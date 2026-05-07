@@ -25,6 +25,32 @@
     },
     "error": {
       "type": "string"
+    },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "cost_usd": {
+          "type": "number"
+        },
+        "input_tokens": {
+          "type": "integer"
+        },
+        "output_tokens": {
+          "type": "integer"
+        },
+        "cache_read_tokens": {
+          "type": "integer"
+        },
+        "cache_create_tokens": {
+          "type": "integer"
+        },
+        "turns": {
+          "type": "integer"
+        },
+        "model": {
+          "type": "string"
+        }
+      }
     }
   }
 }

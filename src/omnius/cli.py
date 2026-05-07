@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 
 from omnius.config import ConfigError, RepoConfig, load_config
+from omnius.costs import SessionCostRecord, write_session_cost_record
 from omnius.dispatcher import dispatch_manifest, initialize_dispatch_log, update_dispatch_log
 from omnius.planner import (
     build_manifest_tasks,
@@ -127,7 +128,9 @@ def run_command(_args: argparse.Namespace) -> int:
         )
         (journal_dir / "planner_prompt.md").write_text(planner_prompt, encoding="utf-8")
 
+        planner_started_at = datetime.now().astimezone()
         planner_invocation = runner.invoke_planner(task_id="milestone-1-run", prompt=planner_prompt)
+        planner_ended_at = datetime.now().astimezone()
         synthesized_planner_response = _build_manifest_response(
             workspace_home=workspace_home,
             run_date=run_date,
@@ -146,9 +149,13 @@ def run_command(_args: argparse.Namespace) -> int:
         manifest = parse_planner_response(planner_response)
         validate_manifest(manifest)
         _write_json(journal_dir / "manifest.json", manifest)
+        planner_pipeline_patch: dict[str, object] = {}
+        if planner_invocation.usage is not None and planner_invocation.usage.cost_usd is not None:
+            planner_pipeline_patch["planner_cost_usd"] = planner_invocation.usage.cost_usd
         update_dispatch_log(
             dispatch_log_path,
             patch={
+                "pipeline": planner_pipeline_patch,
                 "planner": {
                     "task_id": planner_invocation.task_id,
                     "runner_name": planner_invocation.runner_name,
@@ -163,6 +170,18 @@ def run_command(_args: argparse.Namespace) -> int:
                 }
             },
         )
+        if planner_invocation.usage is not None:
+            write_session_cost_record(
+                costs_dir=workspace_home / "costs",
+                session=SessionCostRecord(
+                    file_stem=f"{run_date}_{journal_dir.name}_planner",
+                    session_name="planner",
+                    started_at=planner_started_at.isoformat(),
+                    ended_at=planner_ended_at.isoformat(),
+                    status="SUCCESS",
+                    usage=planner_invocation.usage,
+                ),
+            )
         dispatch_result = dispatch_manifest(
             manifest=manifest,
             runner=runner,
@@ -170,6 +189,7 @@ def run_command(_args: argparse.Namespace) -> int:
             workspace_home=workspace_home,
             journal_dir=journal_dir,
             dispatch_log_path=dispatch_log_path,
+            planner_usage=planner_invocation.usage,
         )
     except Exception as exc:
         return _finalize_pipeline_failure(

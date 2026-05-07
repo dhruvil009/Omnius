@@ -12,8 +12,9 @@ import time
 import importlib.resources as resources
 
 from omnius.config import OmniusConfig, RepoConfig
+from omnius.costs import SessionCostRecord, update_aggregate_cost_ledger, write_session_cost_record
 from omnius.recurring import record_recurring_task_result
-from omnius.runners.base import RunnerAdapter, WorkerRequest
+from omnius.runners.base import RunnerAdapter, UsageStats, WorkerRequest, parse_usage_stats
 from omnius.tasks import archive_local_task_success, move_local_task_to_pending_approval
 
 
@@ -101,12 +102,14 @@ def dispatch_manifest(
     workspace_home: Path,
     journal_dir: Path,
     dispatch_log_path: Path,
+    planner_usage: UsageStats | None = None,
 ) -> dict[str, object]:
     repo_lookup = {repo.slug: repo for repo in config.repos}
     run_date = date.fromisoformat(str(manifest["run_date"]))
     failure_threshold = config.global_config.max_consecutive_failures
     consecutive_failures = 0
     elapsed_pipeline_seconds = 0.0
+    known_total_cost_usd = planner_usage.cost_usd if planner_usage is not None else None
     update_dispatch_log(
         dispatch_log_path,
         patch={
@@ -154,20 +157,40 @@ def dispatch_manifest(
             run_date=run_date,
             failure_threshold=failure_threshold,
         )
+        _write_task_cost_record_if_present(
+            workspace_home=workspace_home,
+            journal_dir=journal_dir,
+            task=task,
+            task_state=task_state,
+        )
+        known_total_cost_usd = _accumulate_known_cost(known_total_cost_usd, task_state.get("cost_usd"))
         consecutive_failures = 0 if task_state["status"] == "SUCCESS" else consecutive_failures + 1
+        pipeline_patch: dict[str, object] = {
+            "circuit_breaker": {
+                "consecutive_failures": consecutive_failures,
+                "state": "open" if consecutive_failures >= failure_threshold else "closed",
+            }
+        }
+        if known_total_cost_usd is not None:
+            pipeline_patch["total_cost_usd"] = round(known_total_cost_usd, 3)
         update_dispatch_log(
             dispatch_log_path,
             patch={
                 "tasks": {task.task_id: task_state},
-                "pipeline": {
-                    "circuit_breaker": {
-                        "consecutive_failures": consecutive_failures,
-                        "state": "open" if consecutive_failures >= failure_threshold else "closed",
-                    }
-                },
+                "pipeline": pipeline_patch,
             },
         )
-    return load_dispatch_log(dispatch_log_path)
+    result = load_dispatch_log(dispatch_log_path)
+    if known_total_cost_usd is not None:
+        update_aggregate_cost_ledger(
+            costs_dir=workspace_home / "costs",
+            run_date=run_date.isoformat(),
+            total_tasks=len(result.get("tasks", {})),
+            success_count=_count_successes(result),
+            total_cost_usd=known_total_cost_usd,
+            notes=_aggregate_notes(result),
+        )
+    return result
 
 
 def _dispatch_one_task(
@@ -180,6 +203,7 @@ def _dispatch_one_task(
     max_time_minutes: float,
 ) -> dict[str, object]:
     started_at = time.monotonic()
+    started_at_wall_clock = _now_iso()
     ended_at_wall_clock: str | None = None
     repo_path = Path(repo.path).expanduser()
     branch = f"omnius/{journal_dir.parent.name}/{task.task_id}"
@@ -246,6 +270,7 @@ def _dispatch_one_task(
         _cleanup_worktree(repo_path=repo_path, worktree_path=worktree_path)
 
     duration_seconds = time.monotonic() - started_at
+    task_state["start"] = started_at_wall_clock
     task_state["start_monotonic"] = started_at
     task_state["end"] = ended_at_wall_clock
     task_state["duration_seconds"] = round(duration_seconds, 3)
@@ -294,6 +319,67 @@ def _build_skipped_task_state(*, task: DispatchTask, status: str) -> dict[str, o
         "repo_slug": task.repo_slug,
         "status": status,
     }
+
+
+def _write_task_cost_record_if_present(
+    *,
+    workspace_home: Path,
+    journal_dir: Path,
+    task: DispatchTask,
+    task_state: dict[str, object],
+) -> None:
+    usage = _usage_from_task_state(task_state)
+    if usage is None:
+        return
+    write_session_cost_record(
+        costs_dir=workspace_home / "costs",
+        session=SessionCostRecord(
+            file_stem=f"{journal_dir.parent.name}_{journal_dir.name}_{task.task_id}",
+            session_name=f"worker {task.task_id}",
+            started_at=_optional_string(task_state.get("start")),
+            ended_at=_optional_string(task_state.get("end")),
+            status=str(task_state["status"]),
+            task_id=task.task_id,
+            task_type=task.task_type,
+            complexity=task.complexity,
+            usage=usage,
+        ),
+    )
+
+
+def _accumulate_known_cost(current_total: float | None, raw_cost: object) -> float | None:
+    if raw_cost is None:
+        return current_total
+    if isinstance(raw_cost, bool) or not isinstance(raw_cost, (int, float)):
+        return current_total
+    if current_total is None:
+        return float(raw_cost)
+    return current_total + float(raw_cost)
+
+
+def _count_successes(dispatch_result: dict[str, object]) -> int:
+    tasks = dispatch_result.get("tasks", {})
+    if not isinstance(tasks, dict):
+        return 0
+    return sum(1 for task_state in tasks.values() if isinstance(task_state, dict) and task_state.get("status") == "SUCCESS")
+
+
+def _aggregate_notes(dispatch_result: dict[str, object]) -> str:
+    pipeline = dispatch_result.get("pipeline", {})
+    if isinstance(pipeline, dict):
+        breaker = pipeline.get("circuit_breaker", {})
+        if isinstance(breaker, dict) and breaker.get("state") == "open":
+            return "circuit breaker tripped"
+    tasks = dispatch_result.get("tasks", {})
+    if not isinstance(tasks, dict):
+        return ""
+    budget_exhausted = any(
+        isinstance(task_state, dict) and task_state.get("status") == "BUDGET_EXHAUSTED"
+        for task_state in tasks.values()
+    )
+    if budget_exhausted:
+        return "pipeline budget exhausted"
+    return ""
 
 
 def _prepare_worktree(*, repo_path: Path, base_branch: str, branch: str, worktree_path: Path) -> None:
@@ -454,6 +540,18 @@ def _classify_worker_result(*, task: DispatchTask, stdout_path: Path, branch: st
             "error": "Worker output must be a JSON object",
         }
 
+    try:
+        usage = parse_usage_stats(payload.get("usage"))
+    except ValueError as exc:
+        return {
+            "id": task.task_id,
+            "title": task.title,
+            "repo_slug": task.repo_slug,
+            "status": "CRASH",
+            "branch": branch,
+            "error": str(exc),
+        }
+
     status = payload.get("status")
     if status == "SUCCESS":
         summary = payload.get("summary")
@@ -467,7 +565,7 @@ def _classify_worker_result(*, task: DispatchTask, stdout_path: Path, branch: st
                 "branch": branch,
                 "error": "SUCCESS worker output missing required fields",
             }
-        return {
+        result = {
             "id": task.task_id,
             "title": task.title,
             "repo_slug": task.repo_slug,
@@ -476,9 +574,11 @@ def _classify_worker_result(*, task: DispatchTask, stdout_path: Path, branch: st
             "summary": summary,
             "pr_url": payload.get("pr_url"),
         }
+        _apply_usage_fields(result, usage)
+        return result
 
     if status == "PARTIAL":
-        return {
+        result = {
             "id": task.task_id,
             "title": task.title,
             "repo_slug": task.repo_slug,
@@ -486,8 +586,10 @@ def _classify_worker_result(*, task: DispatchTask, stdout_path: Path, branch: st
             "branch": payload.get("branch") or branch,
             "notes": payload.get("notes"),
         }
+        _apply_usage_fields(result, usage)
+        return result
     if status == "BLOCKED":
-        return {
+        result = {
             "id": task.task_id,
             "title": task.title,
             "repo_slug": task.repo_slug,
@@ -495,8 +597,10 @@ def _classify_worker_result(*, task: DispatchTask, stdout_path: Path, branch: st
             "branch": branch,
             "reason": payload.get("reason"),
         }
+        _apply_usage_fields(result, usage)
+        return result
     if status == "FAILURE":
-        return {
+        result = {
             "id": task.task_id,
             "title": task.title,
             "repo_slug": task.repo_slug,
@@ -504,6 +608,8 @@ def _classify_worker_result(*, task: DispatchTask, stdout_path: Path, branch: st
             "branch": branch,
             "error": payload.get("error"),
         }
+        _apply_usage_fields(result, usage)
+        return result
     return {
         "id": task.task_id,
         "title": task.title,
@@ -512,6 +618,72 @@ def _classify_worker_result(*, task: DispatchTask, stdout_path: Path, branch: st
         "branch": branch,
         "error": "Worker output status was missing or unsupported",
     }
+
+
+def _apply_usage_fields(task_state: dict[str, object], usage: UsageStats | None) -> None:
+    if usage is None:
+        return
+    if usage.cost_usd is not None:
+        task_state["cost_usd"] = usage.cost_usd
+    if usage.turns is not None:
+        task_state["turns"] = usage.turns
+    if usage.model is not None:
+        task_state["model"] = usage.model
+    tokens = _usage_tokens_payload(usage)
+    if tokens:
+        task_state["tokens"] = tokens
+
+
+def _usage_tokens_payload(usage: UsageStats) -> dict[str, int]:
+    payload: dict[str, int] = {}
+    if usage.input_tokens is not None:
+        payload["input"] = usage.input_tokens
+    if usage.output_tokens is not None:
+        payload["output"] = usage.output_tokens
+    if usage.cache_read_tokens is not None:
+        payload["cache_read"] = usage.cache_read_tokens
+    if usage.cache_create_tokens is not None:
+        payload["cache_create"] = usage.cache_create_tokens
+    return payload
+
+
+def _usage_from_task_state(task_state: dict[str, object]) -> UsageStats | None:
+    if not any(key in task_state for key in ("cost_usd", "turns", "model", "tokens")):
+        return None
+    tokens = task_state.get("tokens")
+    input_tokens = output_tokens = cache_read_tokens = cache_create_tokens = None
+    if isinstance(tokens, dict):
+        input_tokens = _coerce_int_value(tokens.get("input"))
+        output_tokens = _coerce_int_value(tokens.get("output"))
+        cache_read_tokens = _coerce_int_value(tokens.get("cache_read"))
+        cache_create_tokens = _coerce_int_value(tokens.get("cache_create"))
+    return UsageStats(
+        cost_usd=_coerce_float_value(task_state.get("cost_usd")),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_create_tokens=cache_create_tokens,
+        turns=_coerce_int_value(task_state.get("turns")),
+        model=_optional_string(task_state.get("model")),
+    )
+
+
+def _coerce_float_value(value: object) -> float | None:
+    if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _coerce_int_value(value: object) -> int | None:
+    if type(value) is not int:
+        return None
+    return value
+
+
+def _optional_string(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return value
 
 
 def _parse_dispatch_task(raw_task: object) -> DispatchTask:
