@@ -74,6 +74,37 @@ class RunPipelineTests(unittest.TestCase):
             self.assertFalse((home / "tasks" / "O00001_add_sample.md").exists())
             self.assertFalse((repo / ".omnius" / "worktrees" / journal_dir.parent.name / "O00001").exists())
 
+    def test_status_command_reports_latest_run_after_pipeline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            home = tmp_path / ".omnius"
+            repo = self._create_repo_with_origin(tmp_path)
+
+            self._write_config(home=home, repo=repo)
+            self._write_local_task(home)
+            fake_bin, fake_codex = self._write_fake_run_binaries(tmp_path)
+
+            result = self._run_cli(
+                home=home,
+                fake_bin=fake_bin,
+                extra_env={"OMNIUS_CODEX_BIN": str(fake_codex)},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            journals = sorted((home / "journal").rglob("dispatch_log.json"))
+            self.assertEqual(len(journals), 1)
+            journal_dir = journals[0].parent
+
+            status_result = self._run_status_cli(home=home)
+
+            self.assertEqual(status_result.returncode, 0, status_result.stderr)
+            payload = json.loads(status_result.stdout)
+            self.assertEqual(payload["date"], journal_dir.parent.name)
+            self.assertEqual(payload["pipeline"]["status"], "completed")
+            self.assertEqual(payload["tasks"][0]["id"], "O00001")
+            self.assertEqual(payload["tasks"][0]["status"], "SUCCESS")
+            self.assertEqual(payload["attention"], [])
+
     def test_run_command_populates_prompt_and_manifest_with_due_recurring_and_pending_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -308,14 +339,17 @@ class RunPipelineTests(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
+            journals = sorted((home / "journal").rglob("dispatch_log.json"))
+            self.assertEqual(len(journals), 1)
+            run_date = journals[0].parent.parent.name
             recurring_state = json.loads((home / "state" / "recurring_state.json").read_text(encoding="utf-8"))
             self.assertEqual(
                 recurring_state["R00001"],
                 {
                     "consecutive_failures": 0,
-                    "last_attempted": "2026-05-06",
+                    "last_attempted": run_date,
                     "last_status": "SUCCESS",
-                    "last_succeeded": "2026-05-06",
+                    "last_succeeded": run_date,
                 },
             )
 
@@ -413,6 +447,18 @@ class RunPipelineTests(unittest.TestCase):
             env.update(extra_env)
         return subprocess.run(
             [PYTHON, "-m", "omnius", "run"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            env=env,
+        )
+
+    def _run_status_cli(self, *, home: Path) -> subprocess.CompletedProcess[str]:
+        env = os.environ.copy()
+        env["OMNIUS_HOME"] = str(home)
+        env["PYTHONPATH"] = str(SRC)
+        return subprocess.run(
+            [PYTHON, "-m", "omnius", "status", "--json"],
             cwd=ROOT,
             text=True,
             capture_output=True,

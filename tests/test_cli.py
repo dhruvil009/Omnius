@@ -36,6 +36,7 @@ class CliSmokeTests(unittest.TestCase):
             result = main([])
         self.assertEqual(result, 0)
         self.assertIn("run", stdout.getvalue())
+        self.assertIn("status", stdout.getvalue())
 
     @unittest.skipIf(sys.version_info < (3, 11), "package requires Python >= 3.11")
     @unittest.skipUnless(HAS_SETUPTOOLS, "setuptools is required for console-script install coverage")
@@ -90,13 +91,21 @@ class CliSmokeTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("run", result.stdout)
+            self.assertIn("status", result.stdout)
 
-    def test_top_level_help_lists_run_command(self) -> None:
+    def test_top_level_help_lists_run_and_status_commands(self) -> None:
         result = self.run_cli("--help")
         self.assertEqual(result.returncode, 0)
         self.assertIn("run", result.stdout)
+        self.assertIn("status", result.stdout)
 
     def test_run_help_mentions_execute_one_pipeline_run(self) -> None:
         result = self.run_cli("run", "--help")
         self.assertEqual(result.returncode, 0)
         self.assertIn("Execute one Omnius pipeline run", result.stdout)
+
+    def test_status_help_mentions_latest_run_summary(self) -> None:
+        result = self.run_cli("status", "--help")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Show the latest Omnius run summary", result.stdout)
+        self.assertIn("--json", result.stdout)

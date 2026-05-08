@@ -22,6 +22,7 @@ from omnius.planner import (
 from omnius.prefetch import collect_prefetch_snapshot
 from omnius.preflight import run_preflight
 from omnius.runners import get_runner
+from omnius.status import load_status_snapshot, render_status_table
 from omnius.workspace import bootstrap_workspace
 
 
@@ -35,6 +36,18 @@ def build_parser() -> argparse.ArgumentParser:
         description="Execute one Omnius pipeline run",
     )
     run_parser.set_defaults(handler=run_command)
+
+    status_parser = subparsers.add_parser(
+        "status",
+        help="Show the latest Omnius run summary",
+        description="Show the latest Omnius run summary",
+    )
+    status_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable status JSON",
+    )
+    status_parser.set_defaults(handler=status_command)
     return parser
 
 
@@ -233,6 +246,20 @@ def _resolve_workspace_home() -> Path:
     if raw_home is None:
         return (Path.home() / ".omnius").expanduser()
     return Path(raw_home).expanduser()
+
+
+def status_command(args: argparse.Namespace) -> int:
+    try:
+        snapshot = load_status_snapshot(_resolve_workspace_home())
+    except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(snapshot.payload, indent=2, sort_keys=True))
+    else:
+        print(render_status_table(snapshot.payload))
+    return 0
 
 
 def _required_capabilities(_config: object) -> list[str]:

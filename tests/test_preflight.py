@@ -8,6 +8,7 @@ from unittest.mock import patch
 from omnius.preflight import CommandCheck, PreflightResult, RepoCheck, run_preflight
 from omnius.runners import get_runner
 from omnius.runners.base import (
+    DayPrepInvocation,
     PlannerInvocation,
     RunnerAdapter,
     RunnerCapability,
@@ -40,6 +41,9 @@ class HealthyRunner(RunnerAdapter):
 
     def build_worker_command(self, request: WorkerRequest) -> list[str]:
         return ["healthy-runner", request.task_id]
+
+    def invoke_dayprep(self, *, task_id: str, prompt: str) -> DayPrepInvocation:
+        return DayPrepInvocation(runner_name=self.name, task_id=task_id, brief_markdown="placeholder brief")
 
 
 class UnhealthyRunner(HealthyRunner):

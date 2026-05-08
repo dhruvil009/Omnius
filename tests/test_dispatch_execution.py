@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from omnius.config import CapabilityConfig, GlobalConfig, OmniusConfig, RepoConfig, RunnerSelection
 from omnius.dispatcher import dispatch_manifest, initialize_dispatch_log
-from omnius.runners.base import PlannerInvocation, RunnerAdapter, RunnerCapability, RunnerHealth, WorkerRequest
+from omnius.runners.base import DayPrepInvocation, PlannerInvocation, RunnerAdapter, RunnerCapability, RunnerHealth, WorkerRequest
 
 
 class FakeRunner(RunnerAdapter):
@@ -34,6 +34,9 @@ class FakeRunner(RunnerAdapter):
     def build_worker_command(self, request: WorkerRequest) -> list[str]:
         self.requests.append(request)
         return [str(self._script_path), request.prompt]
+
+    def invoke_dayprep(self, *, task_id: str, prompt: str) -> DayPrepInvocation:
+        return DayPrepInvocation(runner_name=self.name, task_id=task_id, brief_markdown="stub brief")
 
 
 class DispatchExecutionTests(unittest.TestCase):
