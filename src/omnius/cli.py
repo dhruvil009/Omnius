@@ -25,6 +25,8 @@ from omnius.runners import get_runner
 from omnius.status import load_status_snapshot, render_status_table
 from omnius.workspace import bootstrap_workspace
 
+_GITHUB_SOURCES_ENABLED = False
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="omnius")
@@ -63,8 +65,7 @@ def run_command(_args: argparse.Namespace) -> int:
 
     run_started_at = datetime.now().astimezone()
     run_date = run_started_at.strftime("%Y-%m-%d")
-    journal_dir = workspace_paths.journal_dir / run_date / run_started_at.strftime("%H%M")
-    journal_dir.mkdir(parents=True, exist_ok=True)
+    journal_dir = _allocate_journal_dir(workspace_paths.journal_dir, run_started_at)
     primary_repo = config.repos[0] if config.repos else None
 
     dispatch_log_path = journal_dir / "dispatch_log.json"
@@ -97,7 +98,8 @@ def run_command(_args: argparse.Namespace) -> int:
         preflight = run_preflight(
             runner=runner,
             repo_path=Path(primary_repo.path).expanduser(),
-            required_capabilities=_required_capabilities(config),
+            capability_policy=_capability_policy(config),
+            check_github=_github_checks_enabled(),
         )
         preflight_payload = {
             "ok": preflight.ok,
@@ -128,6 +130,14 @@ def run_command(_args: argparse.Namespace) -> int:
         prefetch_snapshot = collect_prefetch_snapshot(
             workspace_home,
             today=run_started_at.date(),
+        )
+        update_dispatch_log(
+            dispatch_log_path,
+            patch={
+                "snapshot": {
+                    "pending_approval_count": len(prefetch_snapshot.pending_approval_filenames),
+                }
+            },
         )
         planner_prompt = build_planner_prompt(
             template=load_planner_prompt_template(),
@@ -262,13 +272,28 @@ def status_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _required_capabilities(_config: object) -> list[str]:
-    return [
-        "brainstorm",
-        "review_diff",
-        "autonomous_testing",
-        "second_opinion",
-    ]
+def _allocate_journal_dir(journal_root: Path, run_started_at: datetime) -> Path:
+    date_dir = journal_root / run_started_at.strftime("%Y-%m-%d")
+    base_name = run_started_at.strftime("%H%M%S")
+    candidate = date_dir / base_name
+    suffix = 1
+    while candidate.exists():
+        candidate = date_dir / f"{base_name}-{suffix:02d}"
+        suffix += 1
+    candidate.mkdir(parents=True, exist_ok=False)
+    return candidate
+
+
+def _capability_policy(config: object) -> dict[str, str]:
+    capabilities = getattr(config, "capabilities", None)
+    if capabilities is None or not hasattr(capabilities, "as_dict"):
+        return {}
+    return dict(capabilities.as_dict())
+
+
+def _github_checks_enabled() -> bool:
+    # GitHub-backed planner inputs are not wired yet in main; keep local runs local-only.
+    return _GITHUB_SOURCES_ENABLED
 
 
 def _render_repos_table(repos: list[RepoConfig]) -> str:

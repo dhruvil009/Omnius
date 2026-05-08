@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -104,6 +105,38 @@ class RunPipelineTests(unittest.TestCase):
             self.assertEqual(payload["tasks"][0]["id"], "O00001")
             self.assertEqual(payload["tasks"][0]["status"], "SUCCESS")
             self.assertEqual(payload["attention"], [])
+
+    def test_run_command_executes_local_task_without_gh_on_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            home = tmp_path / ".omnius"
+            repo = self._create_repo_with_origin(tmp_path)
+
+            self._write_config(home=home, repo=repo)
+            self._write_local_task(home)
+            fake_bin, fake_codex = self._write_fake_run_binaries(tmp_path)
+            (fake_bin / "gh").unlink()
+            git_path = shutil.which("git")
+            self.assertIsNotNone(git_path)
+            self._write_executable(
+                fake_bin / "git",
+                f"#!/bin/sh\nexec {git_path} \"$@\"\n",
+            )
+
+            result = self._run_cli(
+                home=home,
+                fake_bin=fake_bin,
+                extra_env={
+                    "OMNIUS_CODEX_BIN": str(fake_codex),
+                    "PATH": str(fake_bin),
+                },
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            journals = sorted((home / "journal").rglob("dispatch_log.json"))
+            self.assertEqual(len(journals), 1)
+            preflight = json.loads((journals[0].parent / "preflight.json").read_text(encoding="utf-8"))
+            self.assertTrue(preflight["payload"]["gh"]["skipped"])
 
     def test_run_command_honors_local_task_agent_override(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

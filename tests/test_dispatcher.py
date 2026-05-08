@@ -4,7 +4,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from omnius.config import CapabilityConfig, GlobalConfig, OmniusConfig, RepoConfig, RunnerSelection
 from omnius.dispatcher import initialize_dispatch_log, load_dispatch_log, update_dispatch_log
+from omnius.dispatcher import dispatch_manifest
+from omnius.runners.base import DayPrepInvocation, PlannerInvocation, RunnerAdapter, RunnerCapability, RunnerHealth, WorkerRequest
 
 
 class DispatchLogTests(unittest.TestCase):
@@ -169,3 +172,94 @@ class DispatchLogTests(unittest.TestCase):
         self.assertEqual(payload["tasks"]["task-001"]["title"], "Write tests")
         self.assertEqual(payload["tasks"]["task-002"], {"status": "queued"})
         self.assertEqual(payload["meta"], {"attempts": 1, "last_runner": "claude"})
+
+
+class _NoopRunner(RunnerAdapter):
+    @property
+    def name(self) -> str:
+        return "noop"
+
+    def health_check(self) -> RunnerHealth:
+        return RunnerHealth(ok=True, summary="ready")
+
+    def discover_capabilities(self) -> dict[str, RunnerCapability]:
+        return {}
+
+    def invoke_planner(self, *, task_id: str, prompt: str) -> PlannerInvocation:
+        return PlannerInvocation(runner_name=self.name, task_id=task_id, prompt=prompt, plan_text="stub")
+
+    def build_worker_command(self, request: WorkerRequest) -> list[str]:
+        raise AssertionError("worker command should not be built for unknown repo slugs")
+
+    def invoke_dayprep(self, *, task_id: str, prompt: str) -> DayPrepInvocation:
+        return DayPrepInvocation(runner_name=self.name, task_id=task_id, brief_markdown="stub")
+
+
+class DispatcherValidationTests(unittest.TestCase):
+    def test_dispatch_manifest_rejects_unknown_repo_slug_before_worker_dispatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            workspace_home = tmp_path / ".omnius"
+            workspace_home.mkdir(parents=True, exist_ok=True)
+            journal_dir = workspace_home / "journal" / "2026-05-07" / "2100"
+            journal_dir.mkdir(parents=True, exist_ok=True)
+            dispatch_log_path = journal_dir / "dispatch_log.json"
+            initialize_dispatch_log(
+                dispatch_log_path,
+                pipeline_id="pipeline-20260507-210000",
+                runner_name="codex",
+                repo_slug="example",
+                branch="main",
+            )
+
+            with self.assertRaisesRegex(ValueError, "unknown repo_slug"):
+                dispatch_manifest(
+                    manifest={
+                        "run_date": "2026-05-07",
+                        "tasks": [
+                            {
+                                "id": "O00001",
+                                "title": "Unknown repo task",
+                                "type": "implementation",
+                                "repo_slug": "missing",
+                                "source_ref": "tasks/O00001_unknown.md",
+                                "filename": "O00001_unknown.md",
+                                "max_time_minutes": 30,
+                                "complexity": "small",
+                            }
+                        ],
+                    },
+                    runner=_NoopRunner(),
+                    config=self._config(repo_path=tmp_path / "repo"),
+                    workspace_home=workspace_home,
+                    journal_dir=journal_dir,
+                    dispatch_log_path=dispatch_log_path,
+                )
+
+    def _config(self, *, repo_path: Path) -> OmniusConfig:
+        return OmniusConfig(
+            global_config=GlobalConfig(
+                timezone="America/Los_Angeles",
+                pipeline_cron="0 21 * * 0-4",
+                pipeline_budget_minutes=540,
+                default_task_budget_minutes=120,
+                max_consecutive_failures=3,
+                notification_backend="none",
+            ),
+            runner=RunnerSelection(default="codex"),
+            capabilities=CapabilityConfig(
+                brainstorm="auto",
+                review_diff="auto",
+                autonomous_testing="auto",
+                second_opinion="auto",
+            ),
+            repos=[
+                RepoConfig(
+                    slug="example",
+                    path=str(repo_path),
+                    branch="main",
+                    role="author",
+                    labels=["omnius"],
+                )
+            ],
+        )

@@ -196,7 +196,7 @@ def _collect_skipped(
     if not isinstance(manifest_skipped, list):
         manifest_skipped = []
 
-    pending_approval = sum(1 for _ in _workspace_home_for_journal(journal_dir).joinpath("tasks", "pending_approval").glob("*.md"))
+    pending_approval = _pending_approval_count_from_dispatch_log(dispatch_log)
     budget_exhausted = _count_task_statuses(tasks, "BUDGET_EXHAUSTED")
     circuit_breaker_skipped = _count_task_statuses(tasks, "CIRCUIT_BREAKER_SKIPPED")
     payload = {
@@ -259,8 +259,11 @@ def _parse_started_at(raw_value: object) -> datetime:
     return datetime.min.replace(tzinfo=timezone.utc)
 
 
-def _workspace_home_for_journal(journal_dir: Path) -> Path:
-    try:
-        return journal_dir.parents[2]
-    except IndexError as exc:
-        raise ValueError(f"Journal directory is not under an Omnius workspace: {journal_dir}") from exc
+def _pending_approval_count_from_dispatch_log(dispatch_log: dict[str, object]) -> int:
+    snapshot = dispatch_log.get("snapshot", {})
+    if not isinstance(snapshot, dict):
+        return 0
+    raw_value = snapshot.get("pending_approval_count", 0)
+    if type(raw_value) is not int or raw_value < 0:
+        return 0
+    return raw_value

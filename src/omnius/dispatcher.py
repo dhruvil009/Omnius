@@ -146,7 +146,9 @@ def dispatch_manifest(
             )
             continue
 
-        repo = repo_lookup[task.repo_slug]
+        repo = repo_lookup.get(task.repo_slug)
+        if repo is None:
+            raise ValueError(f"Manifest task {task.task_id} referenced unknown repo_slug: {task.repo_slug}")
         task_state = _dispatch_one_task(
             task=task,
             repo=repo,

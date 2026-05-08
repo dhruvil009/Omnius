@@ -1,4 +1,5 @@
 import contextlib
+from datetime import datetime, timezone
 import importlib.util
 import io
 import os
@@ -9,6 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from omnius import cli
 from omnius.cli import main
 
 
@@ -109,3 +111,14 @@ class CliSmokeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("Show the latest Omnius run summary", result.stdout)
         self.assertIn("--json", result.stdout)
+
+    def test_allocate_journal_dir_appends_suffix_when_base_path_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            journal_root = Path(tmp) / "journal"
+            run_started_at = datetime(2026, 5, 7, 21, 0, 0, tzinfo=timezone.utc)
+
+            first = cli._allocate_journal_dir(journal_root, run_started_at)
+            second = cli._allocate_journal_dir(journal_root, run_started_at)
+
+        self.assertEqual(first.name, "210000")
+        self.assertEqual(second.name, "210000-01")

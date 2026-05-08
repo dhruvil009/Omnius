@@ -92,13 +92,15 @@ def run_preflight(
     *,
     runner: RunnerAdapter,
     repo_path: Path,
-    required_capabilities: list[str],
+    capability_policy: dict[str, str],
+    check_github: bool = True,
     gh_check: Optional[CommandCheck] = None,
     git_check: Optional[CommandCheck] = None,
     python_check: Optional[CommandCheck] = None,
     repo_check: Optional[RepoCheck] = None,
 ) -> PreflightResult:
     runner_health = runner.health_check()
+    repo_status = repo_check or _default_repo_check(repo_path)
     capabilities: dict[str, object] | None
     if runner_health.ok:
         capabilities = runner.discover_capabilities()
@@ -107,33 +109,63 @@ def run_preflight(
         capabilities = None
         skipped_capability_detail = "capability discovery skipped for unhealthy runner"
     gh_payload_extra: dict[str, object] = {}
-    if gh_check is None:
+    if not check_github:
+        gh_status = CommandCheck(name="gh", ok=True, detail="GitHub checks skipped for this run")
+        gh_payload_extra = {"skipped": True}
+    elif gh_check is None:
         gh_status, gh_payload_extra = _default_gh_payload()
     else:
         gh_status = gh_check
     git_status = git_check or _default_command_check("git")
     python_status = python_check or _default_python_check()
-    repo_status = repo_check or _default_repo_check(repo_path)
 
     capability_payload: dict[str, dict[str, object]] = {}
-    for capability_name in required_capabilities:
+    for capability_name, policy in capability_policy.items():
         capability = None if capabilities is None else capabilities.get(capability_name)
+        runner_available = capability.available if capability is not None else False
+        if policy == "disable":
+            capability_payload[capability_name] = {
+                "available": False,
+                "detail": "disabled by user policy",
+                "enabled": False,
+                "policy": policy,
+                "runner_available": runner_available,
+            }
+            continue
         if capability is None:
             capability_payload[capability_name] = {
                 "available": False,
                 "detail": skipped_capability_detail,
-                "required": True,
+                "enabled": True,
+                "policy": policy,
+                "runner_available": False,
             }
             continue
         capability_payload[capability_name] = {
             "available": capability.available,
             "detail": capability.detail,
-            "required": True,
+            "enabled": True,
+            "policy": policy,
+            "runner_available": capability.available,
         }
+
+    repo_ok = repo_status.exists and repo_status.is_git_repo
+    available_capabilities = sorted(
+        capability_name
+        for capability_name, capability_entry in capability_payload.items()
+        if capability_entry.get("available") is True
+    )
+    forced_unavailable_capabilities = sorted(
+        capability_name
+        for capability_name, capability_entry in capability_payload.items()
+        if capability_entry.get("policy") == "force" and capability_entry.get("available") is not True
+    )
 
     abort_reason = ""
     if not runner_health.ok:
         abort_reason = "runner"
+    elif not repo_ok:
+        abort_reason = "repo"
     elif not gh_status.ok:
         abort_reason = "gh"
     elif not git_status.ok:
@@ -152,6 +184,8 @@ def run_preflight(
             "is_git_repo": repo_status.is_git_repo,
         },
         "capabilities": capability_payload,
+        "available_capabilities": available_capabilities,
+        "forced_unavailable_capabilities": forced_unavailable_capabilities,
     }
 
     return PreflightResult(

@@ -85,7 +85,11 @@ class PreflightTests(unittest.TestCase):
             result = run_preflight(
                 runner=HealthyRunner(),
                 repo_path=repo_path,
-                required_capabilities=["brainstorm", "review_diff", "second_opinion"],
+                capability_policy={
+                    "brainstorm": "auto",
+                    "review_diff": "force",
+                    "second_opinion": "disable",
+                },
                 gh_check=CommandCheck(name="gh", ok=True, detail="2.0.0"),
                 git_check=CommandCheck(name="git", ok=True, detail="2.45.0"),
                 python_check=CommandCheck(name="python", ok=True, detail="3.11.9"),
@@ -104,15 +108,73 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(
             result.payload["capabilities"],
             {
-                "brainstorm": {"available": True, "detail": "stub", "required": True},
-                "review_diff": {"available": False, "detail": "missing", "required": True},
+                "brainstorm": {
+                    "available": True,
+                    "detail": "stub",
+                    "enabled": True,
+                    "policy": "auto",
+                    "runner_available": True,
+                },
+                "review_diff": {
+                    "available": False,
+                    "detail": "missing",
+                    "enabled": True,
+                    "policy": "force",
+                    "runner_available": False,
+                },
                 "second_opinion": {
                     "available": False,
-                    "detail": "runner did not report capability",
-                    "required": True,
+                    "detail": "disabled by user policy",
+                    "enabled": False,
+                    "policy": "disable",
+                    "runner_available": False,
                 },
             },
         )
+        self.assertEqual(result.payload["available_capabilities"], ["brainstorm"])
+        self.assertEqual(result.payload["forced_unavailable_capabilities"], ["review_diff"])
+
+    def test_run_preflight_aborts_when_repo_is_missing_or_not_git(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp) / "missing-repo"
+
+            for repo_check in (
+                RepoCheck(path=repo_path, exists=False, is_git_repo=False),
+                RepoCheck(path=repo_path, exists=True, is_git_repo=False),
+            ):
+                with self.subTest(repo_check=repo_check):
+                    result = run_preflight(
+                        runner=HealthyRunner(),
+                        repo_path=repo_path,
+                        capability_policy={},
+                        check_github=False,
+                        git_check=CommandCheck(name="git", ok=True, detail="2.45.0"),
+                        python_check=CommandCheck(name="python", ok=True, detail="3.11.9"),
+                        repo_check=repo_check,
+                    )
+
+                    self.assertFalse(result.ok)
+                    self.assertEqual(result.abort_reason, "repo")
+
+    def test_run_preflight_skips_github_checks_for_local_only_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            (repo_path / ".git").write_text("gitdir: /tmp/example\n", encoding="utf-8")
+
+            with patch("omnius.preflight._default_gh_payload", side_effect=AssertionError("gh probe should be skipped")):
+                result = run_preflight(
+                    runner=HealthyRunner(),
+                    repo_path=repo_path,
+                    capability_policy={"brainstorm": "auto"},
+                    check_github=False,
+                    git_check=CommandCheck(name="git", ok=True, detail="2.45.0"),
+                    python_check=CommandCheck(name="python", ok=True, detail="3.11.9"),
+                    repo_check=RepoCheck(path=repo_path, exists=True, is_git_repo=True),
+                )
+
+        self.assertTrue(result.ok)
+        self.assertTrue(result.payload["gh"]["skipped"])
+        self.assertEqual(result.payload["gh"]["detail"], "GitHub checks skipped for this run")
 
     def test_run_preflight_aborts_when_runner_is_unhealthy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -122,7 +184,7 @@ class PreflightTests(unittest.TestCase):
             result = run_preflight(
                 runner=UnhealthyRunner(),
                 repo_path=repo_path,
-                required_capabilities=["brainstorm"],
+                capability_policy={"brainstorm": "auto"},
                 gh_check=CommandCheck(name="gh", ok=True, detail="2.0.0"),
                 git_check=CommandCheck(name="git", ok=True, detail="2.45.0"),
                 python_check=CommandCheck(name="python", ok=True, detail="3.11.9"),
@@ -139,7 +201,7 @@ class PreflightTests(unittest.TestCase):
             result = run_preflight(
                 runner=UnhealthyExplodingRunner(),
                 repo_path=repo_path,
-                required_capabilities=["brainstorm"],
+                capability_policy={"brainstorm": "auto"},
                 gh_check=CommandCheck(name="gh", ok=True, detail="2.0.0"),
                 git_check=CommandCheck(name="git", ok=True, detail="2.45.0"),
                 python_check=CommandCheck(name="python", ok=True, detail="3.11.9"),
@@ -153,7 +215,9 @@ class PreflightTests(unittest.TestCase):
                 "brainstorm": {
                     "available": False,
                     "detail": "capability discovery skipped for unhealthy runner",
-                    "required": True,
+                    "enabled": True,
+                    "policy": "auto",
+                    "runner_available": False,
                 },
             },
         )
@@ -166,7 +230,7 @@ class PreflightTests(unittest.TestCase):
             gh_result = run_preflight(
                 runner=HealthyRunner(),
                 repo_path=repo_path,
-                required_capabilities=[],
+                capability_policy={},
                 gh_check=CommandCheck(name="gh", ok=False, detail="not installed"),
                 git_check=CommandCheck(name="git", ok=True, detail="2.45.0"),
                 python_check=CommandCheck(name="python", ok=True, detail="3.11.9"),
@@ -174,7 +238,7 @@ class PreflightTests(unittest.TestCase):
             git_result = run_preflight(
                 runner=HealthyRunner(),
                 repo_path=repo_path,
-                required_capabilities=[],
+                capability_policy={},
                 gh_check=CommandCheck(name="gh", ok=True, detail="2.0.0"),
                 git_check=CommandCheck(name="git", ok=False, detail="missing"),
                 python_check=CommandCheck(name="python", ok=True, detail="3.11.9"),
@@ -182,7 +246,7 @@ class PreflightTests(unittest.TestCase):
             python_result = run_preflight(
                 runner=HealthyRunner(),
                 repo_path=repo_path,
-                required_capabilities=[],
+                capability_policy={},
                 gh_check=CommandCheck(name="gh", ok=True, detail="2.0.0"),
                 git_check=CommandCheck(name="git", ok=True, detail="2.45.0"),
                 python_check=CommandCheck(name="python", ok=False, detail="3.10.14"),
@@ -206,7 +270,7 @@ class PreflightTests(unittest.TestCase):
                 result = run_preflight(
                     runner=HealthyRunner(),
                     repo_path=repo_path,
-                    required_capabilities=[],
+                    capability_policy={},
                     python_check=CommandCheck(name="python", ok=True, detail="3.11.9"),
                 )
 
@@ -238,7 +302,7 @@ class PreflightTests(unittest.TestCase):
                     result = run_preflight(
                         runner=HealthyRunner(),
                         repo_path=repo_path,
-                        required_capabilities=[],
+                        capability_policy={},
                         python_check=CommandCheck(name="python", ok=True, detail="3.11.9"),
                     )
 
@@ -273,7 +337,7 @@ class PreflightTests(unittest.TestCase):
                     result = run_preflight(
                         runner=HealthyRunner(),
                         repo_path=repo_path,
-                        required_capabilities=[],
+                        capability_policy={},
                         python_check=CommandCheck(name="python", ok=True, detail="3.11.9"),
                     )
 
@@ -314,7 +378,7 @@ class PreflightTests(unittest.TestCase):
                     result = run_preflight(
                         runner=HealthyRunner(),
                         repo_path=repo_path,
-                        required_capabilities=[],
+                        capability_policy={},
                         python_check=CommandCheck(name="python", ok=True, detail="3.11.9"),
                     )
 

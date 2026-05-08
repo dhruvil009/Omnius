@@ -51,6 +51,9 @@ class StatusTests(unittest.TestCase):
             update_dispatch_log(
                 journal_dir / "dispatch_log.json",
                 patch={
+                    "snapshot": {
+                        "pending_approval_count": 1,
+                    },
                     "dayprep": {
                         "brief_path": str(journal_dir / "daily_brief.md"),
                         "latest_brief_path": str(home / "daily_brief.md"),
@@ -99,6 +102,26 @@ class StatusTests(unittest.TestCase):
             self.assertEqual(payload["notes"], "Planner summary")
             self.assertEqual(payload["preflight"]["ok"], True)
 
+    def test_build_status_payload_uses_journaled_pending_approval_snapshot(self) -> None:
+        with TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            bootstrap_workspace(home)
+            journal_dir = self._seed_run(home=home, run_date="2026-05-06", run_time="2100", pipeline_status="completed")
+            update_dispatch_log(
+                journal_dir / "dispatch_log.json",
+                patch={
+                    "snapshot": {
+                        "pending_approval_count": 1,
+                    }
+                },
+            )
+            (home / "tasks" / "pending_approval" / "later_file.md").write_text("Added later\n", encoding="utf-8")
+            (home / "tasks" / "pending_approval" / "later_file_2.md").write_text("Added later\n", encoding="utf-8")
+
+            payload = build_status_payload(journal_dir)
+
+            self.assertEqual(payload["skipped"]["pending_approval"], 1)
+
     def test_render_status_table_includes_summary_and_attention(self) -> None:
         with TemporaryDirectory() as tmp:
             home = Path(tmp) / ".omnius"
@@ -124,6 +147,9 @@ class StatusTests(unittest.TestCase):
             update_dispatch_log(
                 journal_dir / "dispatch_log.json",
                 patch={
+                    "snapshot": {
+                        "pending_approval_count": 1,
+                    },
                     "tasks": {
                         "O00039": {
                             "id": "O00039",

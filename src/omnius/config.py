@@ -10,6 +10,7 @@ class ConfigError(ValueError):
 
 
 SUPPORTED_RUNNERS = frozenset({"codex", "claude"})
+CAPABILITY_POLICY_MODES = frozenset({"auto", "force", "disable"})
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,14 @@ class CapabilityConfig:
     review_diff: str
     autonomous_testing: str
     second_opinion: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "brainstorm": self.brainstorm,
+            "review_diff": self.review_diff,
+            "autonomous_testing": self.autonomous_testing,
+            "second_opinion": self.second_opinion,
+        }
 
 
 @dataclass(frozen=True)
@@ -93,6 +102,24 @@ def _validate_config_types(
         _require_str_list(repo.labels)
 
 
+def _validate_config_values(global_config: GlobalConfig, capabilities: CapabilityConfig) -> None:
+    positive_int_fields = {
+        "pipeline_budget_minutes": global_config.pipeline_budget_minutes,
+        "default_task_budget_minutes": global_config.default_task_budget_minutes,
+        "max_consecutive_failures": global_config.max_consecutive_failures,
+    }
+    for field_name, value in positive_int_fields.items():
+        if value <= 0:
+            raise ConfigError(f"Invalid config value for {field_name}: must be greater than 0")
+
+    for field_name, value in capabilities.as_dict().items():
+        if value not in CAPABILITY_POLICY_MODES:
+            raise ConfigError(
+                f"Invalid config value for capabilities.{field_name}: "
+                f"must be one of {', '.join(sorted(CAPABILITY_POLICY_MODES))}"
+            )
+
+
 def load_config(path: Path) -> OmniusConfig:
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -107,6 +134,8 @@ def load_config(path: Path) -> OmniusConfig:
         _validate_config_types(global_config, runner_default, capabilities, repos)
     except (KeyError, TypeError) as exc:
         raise ConfigError(f"Invalid config structure in {path}") from exc
+
+    _validate_config_values(global_config, capabilities)
 
     if runner_default not in SUPPORTED_RUNNERS:
         raise ConfigError(f"Unsupported runner: {runner_default}")

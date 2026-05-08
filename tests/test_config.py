@@ -192,3 +192,58 @@ class ConfigTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ConfigError, r"^Failed to load config from "):
                 load_config(home / "omnius.toml")
+
+    def test_load_config_rejects_non_positive_runtime_limits(self) -> None:
+        invalid_values = {
+            "pipeline_budget_minutes": 0,
+            "default_task_budget_minutes": -5,
+            "max_consecutive_failures": 0,
+        }
+        for field_name, field_value in invalid_values.items():
+            with self.subTest(field_name=field_name, field_value=field_value):
+                with tempfile.TemporaryDirectory() as tmp:
+                    home = Path(tmp)
+                    (home / "omnius.toml").write_text(self._valid_config_text(**{field_name: field_value}))
+
+                    with self.assertRaisesRegex(ConfigError, field_name):
+                        load_config(home / "omnius.toml")
+
+    def test_load_config_rejects_invalid_capability_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / "omnius.toml").write_text(self._valid_config_text(brainstorm="bogus"))
+
+            with self.assertRaisesRegex(ConfigError, "brainstorm"):
+                load_config(home / "omnius.toml")
+
+    def _valid_config_text(self, **overrides: object) -> str:
+        values: dict[str, object] = {
+            "pipeline_budget_minutes": 540,
+            "default_task_budget_minutes": 120,
+            "max_consecutive_failures": 3,
+            "brainstorm": "auto",
+            "review_diff": "auto",
+            "autonomous_testing": "auto",
+            "second_opinion": "auto",
+        }
+        values.update(overrides)
+        return textwrap.dedent(
+            f"""
+            [global]
+            timezone = "America/Los_Angeles"
+            pipeline_cron = "0 21 * * 0-4"
+            pipeline_budget_minutes = {values["pipeline_budget_minutes"]}
+            default_task_budget_minutes = {values["default_task_budget_minutes"]}
+            max_consecutive_failures = {values["max_consecutive_failures"]}
+            notification_backend = "none"
+
+            [runner]
+            default = "codex"
+
+            [capabilities]
+            brainstorm = "{values["brainstorm"]}"
+            review_diff = "{values["review_diff"]}"
+            autonomous_testing = "{values["autonomous_testing"]}"
+            second_opinion = "{values["second_opinion"]}"
+            """
+        ).strip()
