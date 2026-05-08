@@ -167,6 +167,7 @@ def _render_task_rows(dispatch_log: dict[str, object]) -> list[dict[str, object]
             "title": task_state.get("title"),
             "status": task_state.get("status"),
             "repo_slug": task_state.get("repo_slug"),
+            "agent": task_state.get("agent"),
             "branch": task_state.get("branch"),
             "duration_seconds": task_state.get("duration_seconds"),
         }
@@ -223,7 +224,11 @@ def _render_attention_lines(attention: list[object]) -> list[str]:
             continue
         detail = row.get("summary") or row.get("notes") or row.get("reason") or row.get("error") or ""
         suffix = f": {detail}" if detail else ""
-        lines.append(f"- {row.get('id', '<unknown>')} {row.get('title', '<untitled>')} [{row.get('status', '<unknown>')}]{suffix}")
+        status_label = str(row.get("status", "<unknown>"))
+        agent = row.get("agent")
+        if isinstance(agent, str) and agent:
+            status_label = f"{status_label} via {agent}"
+        lines.append(f"- {row.get('id', '<unknown>')} {row.get('title', '<untitled>')} [{status_label}]{suffix}")
     return lines
 
 

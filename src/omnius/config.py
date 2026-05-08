@@ -9,6 +9,9 @@ class ConfigError(ValueError):
     pass
 
 
+SUPPORTED_RUNNERS = frozenset({"codex", "claude"})
+
+
 @dataclass(frozen=True)
 class GlobalConfig:
     timezone: str
@@ -105,7 +108,7 @@ def load_config(path: Path) -> OmniusConfig:
     except (KeyError, TypeError) as exc:
         raise ConfigError(f"Invalid config structure in {path}") from exc
 
-    if runner_default not in {"codex", "claude"}:
+    if runner_default not in SUPPORTED_RUNNERS:
         raise ConfigError(f"Unsupported runner: {runner_default}")
 
     return OmniusConfig(

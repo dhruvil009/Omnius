@@ -63,6 +63,7 @@ class StatusTests(unittest.TestCase):
                             "title": "Ship feature",
                             "repo_slug": "example",
                             "status": "SUCCESS",
+                            "agent": "codex",
                             "branch": "omnius/2026-05-06/O00001",
                             "summary": "done",
                             "duration_seconds": 12.3,
@@ -72,6 +73,7 @@ class StatusTests(unittest.TestCase):
                             "title": "Investigate flaky test",
                             "repo_slug": "example",
                             "status": "PARTIAL",
+                            "agent": "claude",
                             "branch": "omnius/2026-05-06/O00039",
                             "notes": "needs follow-up",
                             "duration_seconds": 25.1,
@@ -89,6 +91,7 @@ class StatusTests(unittest.TestCase):
             payload = build_status_payload(journal_dir)
 
             self.assertEqual(payload["attention"][0]["id"], "O00039")
+            self.assertEqual(payload["attention"][0]["agent"], "claude")
             self.assertEqual(payload["skipped"]["pending_approval"], 1)
             self.assertEqual(payload["skipped"]["manifest"], 1)
             self.assertEqual(payload["skipped"]["circuit_breaker_skipped"], 1)
@@ -127,6 +130,7 @@ class StatusTests(unittest.TestCase):
                             "title": "Investigate flaky test",
                             "repo_slug": "example",
                             "status": "PARTIAL",
+                            "agent": "claude",
                             "branch": "omnius/2026-05-06/O00039",
                             "notes": "needs follow-up",
                             "duration_seconds": 25.1,
@@ -139,7 +143,7 @@ class StatusTests(unittest.TestCase):
 
             self.assertIn("Pipeline: completed", rendered)
             self.assertIn("Summary: 1 task(s) planned from local queue", rendered)
-            self.assertIn("O00039 Investigate flaky test [PARTIAL]", rendered)
+            self.assertIn("O00039 Investigate flaky test [PARTIAL via claude]", rendered)
             self.assertIn("pending_approval=1", rendered)
 
     def _seed_run(self, *, home: Path, run_date: str, run_time: str, pipeline_status: str) -> Path:

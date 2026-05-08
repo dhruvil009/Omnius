@@ -121,6 +121,7 @@ class PlannerTests(unittest.TestCase):
                     "repo_slug": "example",
                     "source_ref": "tasks/O00001_add_sample.md",
                     "filename": "O00001_add_sample.md",
+                    "agent": "codex",
                     "max_time_minutes": 120,
                     "complexity": "small",
                 }
@@ -130,6 +131,31 @@ class PlannerTests(unittest.TestCase):
         }
 
         validate_manifest(manifest)
+
+    def test_validate_manifest_rejects_invalid_task_agent(self) -> None:
+        with self.assertRaisesRegex(ValueError, "agent"):
+            validate_manifest(
+                {
+                    "run_date": "2026-05-05",
+                    "journal_dir": "/tmp/journal",
+                    "summary": "1 task planned",
+                    "tasks": [
+                        {
+                            "id": "O00001",
+                            "title": "Add sample",
+                            "type": "implementation",
+                            "repo_slug": "example",
+                            "source_ref": "tasks/O00001_add_sample.md",
+                            "filename": "O00001_add_sample.md",
+                            "agent": "bogus",
+                            "max_time_minutes": 120,
+                            "complexity": "small",
+                        }
+                    ],
+                    "skipped": [],
+                    "notes": "stub",
+                }
+            )
 
     def test_validate_manifest_rejects_missing_or_invalid_required_fields(self) -> None:
         with self.assertRaisesRegex(ValueError, "summary"):
@@ -150,6 +176,7 @@ class PlannerTests(unittest.TestCase):
                     task_id="O00001",
                     filename="O00001_add_sample.md",
                     body="---\ntitle: Add sample\nrepo: example\n---\nBody\n",
+                    agent="claude",
                 )
             ],
             recurring_entries=[
@@ -180,6 +207,7 @@ class PlannerTests(unittest.TestCase):
                     "repo_slug": "example",
                     "source_ref": "tasks/O00001_add_sample.md",
                     "filename": "O00001_add_sample.md",
+                    "agent": "claude",
                     "max_time_minutes": 120,
                     "complexity": "small",
                 },

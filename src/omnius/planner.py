@@ -5,6 +5,7 @@ import importlib.resources as resources
 import json
 from pathlib import Path
 
+from omnius.config import SUPPORTED_RUNNERS
 from omnius.tasks import LocalTaskEntry, RecurringTaskEntry
 
 
@@ -16,11 +17,12 @@ class ManifestTask:
     repo_slug: str
     source_ref: str
     filename: str
+    agent: str | None
     max_time_minutes: int
     complexity: str
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "id": self.task_id,
             "title": self.title,
             "type": self.task_type,
@@ -30,6 +32,9 @@ class ManifestTask:
             "max_time_minutes": self.max_time_minutes,
             "complexity": self.complexity,
         }
+        if self.agent is not None:
+            payload["agent"] = self.agent
+        return payload
 
 
 def load_planner_prompt_template() -> str:
@@ -76,6 +81,7 @@ def parse_planner_response(raw_response: str) -> dict[str, object]:
 
 def validate_manifest(payload: dict[str, object]) -> None:
     _validate_against_schema(load_manifest_schema(), payload, path="manifest")
+    _validate_task_agents(payload.get("tasks"))
 
 
 def choose_planner_response(*, planner_output: str, fallback_manifest_response: str) -> str:
@@ -103,6 +109,7 @@ def build_local_manifest_tasks(
                 repo_slug=_require_frontmatter_value(metadata, "repo", entry.task_id),
                 source_ref=str(Path("tasks") / entry.filename),
                 filename=entry.filename,
+                agent=entry.agent,
                 max_time_minutes=default_task_budget_minutes,
                 complexity="small",
             ).as_dict()
@@ -129,6 +136,7 @@ def build_manifest_tasks(
                 repo_slug=entry.repo_slug,
                 source_ref=str(Path("tasks") / "recurring" / entry.filename),
                 filename=entry.filename,
+                agent=None,
                 max_time_minutes=entry.max_time_minutes or default_task_budget_minutes,
                 complexity=entry.complexity,
             ).as_dict()
@@ -138,6 +146,19 @@ def build_manifest_tasks(
 
 def _render_section(label: str, value: str) -> str:
     return f"{label}\n{value}"
+
+
+def _validate_task_agents(raw_tasks: object) -> None:
+    if not isinstance(raw_tasks, list):
+        return
+    for index, raw_task in enumerate(raw_tasks):
+        if not isinstance(raw_task, dict):
+            continue
+        agent = raw_task.get("agent")
+        if agent is None:
+            continue
+        if not isinstance(agent, str) or agent not in SUPPORTED_RUNNERS:
+            raise ValueError(f"Manifest field tasks[{index}].agent must be one of: {', '.join(sorted(SUPPORTED_RUNNERS))}")
 
 
 def _validate_against_schema(schema: object, value: object, *, path: str) -> None:

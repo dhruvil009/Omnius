@@ -69,6 +69,69 @@ class TaskParsingTests(unittest.TestCase):
         self.assertEqual(entries[0].filename, "O00001_add_sample.md")
         self.assertIn("Body 1", entries[0].body)
         self.assertIn("Body 2", entries[1].body)
+        self.assertIsNone(entries[0].agent)
+        self.assertIsNone(entries[1].agent)
+
+    def test_load_local_task_entries_parses_optional_agent_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            bootstrap_workspace(home)
+            (home / "tasks.md").write_text(
+                "## Format\n"
+                "- <ID>: <Title> [file: <filename>.md]\n\n"
+                "## Active\n"
+                "- O00001: Add sample [file: O00001_add_sample.md]\n\n"
+                "## Completed\n",
+                encoding="utf-8",
+            )
+            (home / "tasks" / "O00001_add_sample.md").write_text(
+                textwrap.dedent(
+                    """
+                    ---
+                    title: Add sample
+                    repo: example
+                    agent: claude
+                    ---
+                    Body 1
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            [entry] = load_local_task_entries(home)
+
+        self.assertEqual(entry.agent, "claude")
+
+    def test_load_local_task_entries_rejects_invalid_agent_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            bootstrap_workspace(home)
+            (home / "tasks.md").write_text(
+                "## Format\n"
+                "- <ID>: <Title> [file: <filename>.md]\n\n"
+                "## Active\n"
+                "- O00001: Add sample [file: O00001_add_sample.md]\n\n"
+                "## Completed\n",
+                encoding="utf-8",
+            )
+            (home / "tasks" / "O00001_add_sample.md").write_text(
+                textwrap.dedent(
+                    """
+                    ---
+                    title: Add sample
+                    repo: example
+                    agent: bogus
+                    ---
+                    Body 1
+                    """
+                ).strip()
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "agent"):
+                load_local_task_entries(home)
 
     def test_render_local_tasks_section_formats_loaded_entries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

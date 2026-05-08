@@ -5,6 +5,8 @@ from pathlib import Path
 import re
 import shutil
 
+from omnius.config import SUPPORTED_RUNNERS
+
 
 _ACTIVE_LINE_RE = re.compile(r"^- (?P<task_id>O\d{5}): .* \[file: (?P<filename>[^\]]+)\]$")
 _RECURRING_FILENAME_RE = re.compile(r"^(?P<task_id>R\d{5}).*\.md$")
@@ -18,6 +20,7 @@ class LocalTaskEntry:
     task_id: str
     filename: str
     body: str
+    agent: str | None = None
 
 
 @dataclass(frozen=True)
@@ -50,11 +53,13 @@ def load_local_task_entries(home: Path) -> list[LocalTaskEntry]:
 
         filename = match.group("filename")
         body = (home / "tasks" / filename).read_text(encoding="utf-8")
+        metadata = _parse_frontmatter(body) if body.startswith("---") else {}
         entries.append(
             LocalTaskEntry(
                 task_id=match.group("task_id"),
                 filename=filename,
                 body=body,
+                agent=_parse_agent(metadata.get("agent"), task_id=match.group("task_id")),
             )
         )
 
@@ -261,6 +266,15 @@ def _parse_retry_policy(raw_value: str) -> str:
     if normalized in {"next_run", "immediate"}:
         return normalized
     raise ValueError(f"Invalid retry_on_failure policy: {raw_value}")
+
+
+def _parse_agent(raw_value: str | None, *, task_id: str) -> str | None:
+    if raw_value is None or raw_value == "":
+        return None
+    normalized = raw_value.strip().lower()
+    if normalized in SUPPORTED_RUNNERS:
+        return normalized
+    raise ValueError(f"Task {task_id} frontmatter has invalid 'agent': {raw_value}")
 
 
 def _validate_schedule(schedule: str) -> str:

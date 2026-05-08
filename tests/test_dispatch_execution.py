@@ -14,13 +14,14 @@ from omnius.runners.base import DayPrepInvocation, PlannerInvocation, RunnerAdap
 
 
 class FakeRunner(RunnerAdapter):
-    def __init__(self, script_path: Path) -> None:
+    def __init__(self, script_path: Path, *, name: str = "fake") -> None:
         self._script_path = script_path
+        self._name = name
         self.requests: list[WorkerRequest] = []
 
     @property
     def name(self) -> str:
-        return "fake"
+        return self._name
 
     def health_check(self) -> RunnerHealth:
         return RunnerHealth(ok=True, summary="fake")
@@ -442,6 +443,46 @@ class DispatchExecutionTests(unittest.TestCase):
             self.assertEqual(runner.requests[0].max_time_minutes, 5)
             self.assertEqual(runner.requests[1].max_time_minutes, 1)
 
+    def test_dispatch_manifest_honors_task_agent_override_and_records_effective_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo_path = self._create_repo_with_origin(tmp_path)
+            home = self._create_workspace_home(tmp_path)
+            self._write_local_task(home)
+
+            journal_dir = home / "journal" / "2026-05-05" / "2100"
+            journal_dir.mkdir(parents=True, exist_ok=True)
+            dispatch_log_path = journal_dir / "dispatch_log.json"
+            initialize_dispatch_log(
+                dispatch_log_path,
+                pipeline_id="pipeline-20260505-210000",
+                runner_name="codex",
+                repo_slug="example",
+                branch="main",
+            )
+
+            script_path = self._write_worker_script(
+                tmp_path / "success.sh",
+                'printf \'{"status":"SUCCESS","branch":"branch","summary":"done"}\\n\'\n',
+            )
+            default_runner = FakeRunner(script_path, name="codex")
+            override_runner = FakeRunner(script_path, name="claude")
+
+            result = dispatch_manifest(
+                manifest=self._manifest(tasks=[self._local_manifest_task(agent="claude")]),
+                runner=default_runner,
+                config=self._config(repo_path),
+                workspace_home=home,
+                journal_dir=journal_dir,
+                dispatch_log_path=dispatch_log_path,
+                runner_resolver=lambda name: override_runner if name == "claude" else default_runner,
+            )
+
+            self.assertEqual(len(default_runner.requests), 0)
+            self.assertEqual(len(override_runner.requests), 1)
+            self.assertEqual(result["tasks"]["O00001"]["agent"], "claude")
+            self.assertEqual(result["tasks"]["O00001"]["status"], "SUCCESS")
+
     def test_dispatch_manifest_marks_remaining_tasks_budget_exhausted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -534,8 +575,9 @@ class DispatchExecutionTests(unittest.TestCase):
         filename: str = "O00001_add_sample.md",
         title: str = "Add sample",
         max_time_minutes: int = 120,
+        agent: str | None = None,
     ) -> dict[str, object]:
-        return {
+        payload = {
             "id": task_id,
             "title": title,
             "type": "implementation",
@@ -545,6 +587,9 @@ class DispatchExecutionTests(unittest.TestCase):
             "max_time_minutes": max_time_minutes,
             "complexity": "small",
         }
+        if agent is not None:
+            payload["agent"] = agent
+        return payload
 
     def _recurring_manifest_task(self) -> dict[str, object]:
         return {

@@ -52,6 +52,9 @@
           "filename": {
             "type": "string"
           },
+          "agent": {
+            "type": "string"
+          },
           "max_time_minutes": {
             "type": "integer"
           },

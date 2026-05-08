@@ -10,10 +10,12 @@ import subprocess
 import tempfile
 import time
 import importlib.resources as resources
+from typing import Callable
 
-from omnius.config import OmniusConfig, RepoConfig
+from omnius.config import OmniusConfig, RepoConfig, SUPPORTED_RUNNERS
 from omnius.costs import SessionCostRecord, update_aggregate_cost_ledger, write_session_cost_record
 from omnius.recurring import record_recurring_task_result
+from omnius.runners import get_runner
 from omnius.runners.base import RunnerAdapter, UsageStats, WorkerRequest, parse_usage_stats
 from omnius.tasks import archive_local_task_success, move_local_task_to_pending_approval
 
@@ -90,6 +92,7 @@ class DispatchTask:
     repo_slug: str
     source_ref: str
     filename: str
+    agent: str | None
     max_time_minutes: int
     complexity: str
 
@@ -103,6 +106,7 @@ def dispatch_manifest(
     journal_dir: Path,
     dispatch_log_path: Path,
     planner_usage: UsageStats | None = None,
+    runner_resolver: Callable[[str], RunnerAdapter] = get_runner,
 ) -> dict[str, object]:
     repo_lookup = {repo.slug: repo for repo in config.repos}
     run_date = date.fromisoformat(str(manifest["run_date"]))
@@ -124,16 +128,18 @@ def dispatch_manifest(
     )
     for raw_task in manifest.get("tasks", []):
         task = _parse_dispatch_task(raw_task)
+        effective_agent = _resolve_task_agent(task=task, default_runner_name=config.runner.default)
+        task_runner = runner if task.agent in (None, config.runner.default) else runner_resolver(effective_agent)
         remaining_budget_minutes = config.global_config.pipeline_budget_minutes - (elapsed_pipeline_seconds / 60)
         if remaining_budget_minutes <= 0:
-            task_state = _build_skipped_task_state(task=task, status="BUDGET_EXHAUSTED")
+            task_state = _build_skipped_task_state(task=task, status="BUDGET_EXHAUSTED", agent=effective_agent)
             update_dispatch_log(
                 dispatch_log_path,
                 patch={"tasks": {task.task_id: task_state}},
             )
             continue
         if consecutive_failures >= failure_threshold:
-            task_state = _build_skipped_task_state(task=task, status="CIRCUIT_BREAKER_SKIPPED")
+            task_state = _build_skipped_task_state(task=task, status="CIRCUIT_BREAKER_SKIPPED", agent=effective_agent)
             update_dispatch_log(
                 dispatch_log_path,
                 patch={"tasks": {task.task_id: task_state}},
@@ -144,10 +150,11 @@ def dispatch_manifest(
         task_state = _dispatch_one_task(
             task=task,
             repo=repo,
-            runner=runner,
+            runner=task_runner,
             workspace_home=workspace_home,
             journal_dir=journal_dir,
             max_time_minutes=min(task.max_time_minutes, remaining_budget_minutes),
+            agent=effective_agent,
         )
         elapsed_pipeline_seconds += float(task_state["duration_seconds"])
         _apply_task_side_effects(
@@ -201,6 +208,7 @@ def _dispatch_one_task(
     workspace_home: Path,
     journal_dir: Path,
     max_time_minutes: float,
+    agent: str,
 ) -> dict[str, object]:
     started_at = time.monotonic()
     started_at_wall_clock = _now_iso()
@@ -252,6 +260,7 @@ def _dispatch_one_task(
             "id": task.task_id,
             "title": task.title,
             "repo_slug": task.repo_slug,
+            "agent": agent,
             "status": "TIMEOUT",
             "branch": branch,
         }
@@ -261,6 +270,7 @@ def _dispatch_one_task(
             "id": task.task_id,
             "title": task.title,
             "repo_slug": task.repo_slug,
+            "agent": agent,
             "status": "FAILURE",
             "branch": branch,
             "error": str(exc),
@@ -270,6 +280,7 @@ def _dispatch_one_task(
         _cleanup_worktree(repo_path=repo_path, worktree_path=worktree_path)
 
     duration_seconds = time.monotonic() - started_at
+    task_state["agent"] = agent
     task_state["start"] = started_at_wall_clock
     task_state["start_monotonic"] = started_at
     task_state["end"] = ended_at_wall_clock
@@ -312,11 +323,12 @@ def _apply_task_side_effects(
         )
 
 
-def _build_skipped_task_state(*, task: DispatchTask, status: str) -> dict[str, object]:
+def _build_skipped_task_state(*, task: DispatchTask, status: str, agent: str) -> dict[str, object]:
     return {
         "id": task.task_id,
         "title": task.title,
         "repo_slug": task.repo_slug,
+        "agent": agent,
         "status": status,
     }
 
@@ -689,16 +701,33 @@ def _optional_string(value: object) -> str | None:
 def _parse_dispatch_task(raw_task: object) -> DispatchTask:
     if not isinstance(raw_task, dict):
         raise ValueError("Manifest task entries must be JSON objects")
+    task_id = str(raw_task["id"])
     return DispatchTask(
-        task_id=str(raw_task["id"]),
+        task_id=task_id,
         title=str(raw_task["title"]),
         task_type=str(raw_task["type"]),
         repo_slug=str(raw_task["repo_slug"]),
         source_ref=str(raw_task["source_ref"]),
         filename=str(raw_task["filename"]),
+        agent=_parse_optional_agent(raw_task.get("agent"), task_id=task_id),
         max_time_minutes=int(raw_task["max_time_minutes"]),
         complexity=str(raw_task["complexity"]),
     )
+
+
+def _resolve_task_agent(*, task: DispatchTask, default_runner_name: str) -> str:
+    return task.agent or default_runner_name
+
+
+def _parse_optional_agent(value: object, *, task_id: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"Manifest task {task_id} field 'agent' must be a string")
+    normalized = value.strip().lower()
+    if normalized not in SUPPORTED_RUNNERS:
+        raise ValueError(f"Manifest task {task_id} field 'agent' must be one of: {', '.join(sorted(SUPPORTED_RUNNERS))}")
+    return normalized
 
 
 def _run_git(repo_path: Path, args: list[str]) -> None:

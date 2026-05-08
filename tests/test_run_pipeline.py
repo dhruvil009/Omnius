@@ -105,6 +105,46 @@ class RunPipelineTests(unittest.TestCase):
             self.assertEqual(payload["tasks"][0]["status"], "SUCCESS")
             self.assertEqual(payload["attention"], [])
 
+    def test_run_command_honors_local_task_agent_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            home = tmp_path / ".omnius"
+            repo = self._create_repo_with_origin(tmp_path)
+
+            self._write_config(home=home, repo=repo)
+            self._write_local_task(home, agent="claude")
+            fake_bin, _fake_codex = self._write_fake_run_binaries(tmp_path)
+            fake_claude = self._write_fake_claude_binary(tmp_path)
+            failing_codex = self._write_executable(
+                tmp_path / "bin" / "failing-codex",
+                "#!/bin/sh\nexit 99\n",
+            )
+            runner_log = tmp_path / "runner.log"
+
+            result = self._run_cli(
+                home=home,
+                fake_bin=fake_bin,
+                extra_env={
+                    "OMNIUS_CODEX_BIN": str(failing_codex),
+                    "OMNIUS_CLAUDE_BIN": str(fake_claude),
+                    "OMNIUS_FAKE_RUNNER_LOG": str(runner_log),
+                },
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            journals = sorted((home / "journal").rglob("dispatch_log.json"))
+            self.assertEqual(len(journals), 1)
+            journal_dir = journals[0].parent
+            manifest = json.loads((journal_dir / "manifest.json").read_text(encoding="utf-8"))
+            dispatch_log = json.loads((journal_dir / "dispatch_log.json").read_text(encoding="utf-8"))
+            status_result = self._run_status_cli(home=home)
+            status_payload = json.loads(status_result.stdout)
+
+            self.assertEqual(manifest["tasks"][0]["agent"], "claude")
+            self.assertEqual(dispatch_log["tasks"]["O00001"]["agent"], "claude")
+            self.assertEqual(status_payload["tasks"][0]["agent"], "claude")
+            self.assertEqual(runner_log.read_text(encoding="utf-8").strip(), "claude")
+
     def test_run_command_populates_prompt_and_manifest_with_due_recurring_and_pending_approval(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -509,26 +549,6 @@ class RunPipelineTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def _write_local_task(self, home: Path) -> None:
-        tasks_dir = home / "tasks"
-        tasks_dir.mkdir(parents=True, exist_ok=True)
-        (home / "tasks.md").write_text(
-            "## Format\n"
-            "- <ID>: <Title> [file: <filename>.md]\n\n"
-            "## Active\n"
-            "- O00001: Add sample [file: O00001_add_sample.md]\n\n"
-            "## Completed\n",
-            encoding="utf-8",
-        )
-        (tasks_dir / "O00001_add_sample.md").write_text(
-            "---\n"
-            "title: Add sample\n"
-            "repo: example\n"
-            "---\n"
-            "Task body\n",
-            encoding="utf-8",
-        )
-
     def _write_second_local_task(self, home: Path) -> None:
         (home / "tasks.md").write_text(
             "## Format\n"
@@ -539,14 +559,7 @@ class RunPipelineTests(unittest.TestCase):
             "## Completed\n",
             encoding="utf-8",
         )
-        (home / "tasks" / "O00002_follow_up.md").write_text(
-            "---\n"
-            "title: Follow up\n"
-            "repo: example\n"
-            "---\n"
-            "Task body\n",
-            encoding="utf-8",
-        )
+        self._write_task_file(home / "tasks" / "O00002_follow_up.md", title="Follow up")
 
     def _write_malformed_local_task(self, home: Path) -> None:
         tasks_dir = home / "tasks"
@@ -757,3 +770,40 @@ class RunPipelineTests(unittest.TestCase):
     def _write_executable(self, path: Path, content: str) -> None:
         path.write_text(textwrap.dedent(content).lstrip(), encoding="utf-8")
         path.chmod(path.stat().st_mode | stat.S_IXUSR)
+        return path
+
+    def _write_task_file(self, path: Path, *, title: str, agent: Optional[str] = None) -> None:
+        frontmatter = ["---", f"title: {title}", "repo: example"]
+        if agent is not None:
+            frontmatter.append(f"agent: {agent}")
+        frontmatter.extend(["---", "Task body", ""])
+        path.write_text("\n".join(frontmatter), encoding="utf-8")
+
+    def _write_local_task(self, home: Path, agent: Optional[str] = None) -> None:
+        tasks_dir = home / "tasks"
+        tasks_dir.mkdir(parents=True, exist_ok=True)
+        (home / "tasks.md").write_text(
+            "## Format\n"
+            "- <ID>: <Title> [file: <filename>.md]\n\n"
+            "## Active\n"
+            "- O00001: Add sample [file: O00001_add_sample.md]\n\n"
+            "## Completed\n",
+            encoding="utf-8",
+        )
+        self._write_task_file(tasks_dir / "O00001_add_sample.md", title="Add sample", agent=agent)
+
+    def _write_fake_claude_binary(self, tmp_path: Path) -> Path:
+        fake_claude = tmp_path / "bin" / "omnius-fake-claude"
+        return self._write_executable(
+            fake_claude,
+            textwrap.dedent(
+                """\
+                #!/bin/sh
+                set -eu
+                if [ "${OMNIUS_FAKE_RUNNER_LOG:-}" != "" ]; then
+                    printf 'claude\n' >> "$OMNIUS_FAKE_RUNNER_LOG"
+                fi
+                printf '{"status":"SUCCESS","branch":"%s","summary":"done"}\n' "$OMNIUS_BRANCH"
+                """
+            ),
+        )
