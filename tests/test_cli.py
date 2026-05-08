@@ -37,6 +37,9 @@ class CliSmokeTests(unittest.TestCase):
         with contextlib.redirect_stdout(stdout):
             result = main([])
         self.assertEqual(result, 0)
+        self.assertIn("install", stdout.getvalue())
+        self.assertIn("doctor", stdout.getvalue())
+        self.assertIn("uninstall", stdout.getvalue())
         self.assertIn("run", stdout.getvalue())
         self.assertIn("status", stdout.getvalue())
 
@@ -98,8 +101,38 @@ class CliSmokeTests(unittest.TestCase):
     def test_top_level_help_lists_run_and_status_commands(self) -> None:
         result = self.run_cli("--help")
         self.assertEqual(result.returncode, 0)
+        self.assertIn("install", result.stdout)
+        self.assertIn("doctor", result.stdout)
+        self.assertIn("uninstall", result.stdout)
         self.assertIn("run", result.stdout)
         self.assertIn("status", result.stdout)
+
+    def test_install_help_mentions_scheduler_setup(self) -> None:
+        result = self.run_cli("install", "--help")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Install or update the Omnius scheduler setup", result.stdout)
+        self.assertIn("--backend", result.stdout)
+        self.assertIn("--non-interactive", result.stdout)
+
+    def test_doctor_help_mentions_install_health(self) -> None:
+        result = self.run_cli("doctor", "--help")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Show Omnius install and scheduler health", result.stdout)
+
+    def test_uninstall_help_mentions_scheduler_removal(self) -> None:
+        result = self.run_cli("uninstall", "--help")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Remove Omnius-managed scheduler setup", result.stdout)
+
+    def test_install_cron_help_mentions_cron_backend(self) -> None:
+        result = self.run_cli("install-cron", "--help")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Install or update the Omnius cron schedule", result.stdout)
+
+    def test_install_launchd_help_mentions_launchd_backend(self) -> None:
+        result = self.run_cli("install-launchd", "--help")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Install or update the Omnius launchd schedule", result.stdout)
 
     def test_run_help_mentions_execute_one_pipeline_run(self) -> None:
         result = self.run_cli("run", "--help")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import textwrap
 import tomllib
 
 
@@ -11,6 +12,11 @@ class ConfigError(ValueError):
 
 SUPPORTED_RUNNERS = frozenset({"codex", "claude"})
 CAPABILITY_POLICY_MODES = frozenset({"auto", "force", "disable"})
+DEFAULT_PIPELINE_CRON = "0 21 * * 0-4"
+DEFAULT_PIPELINE_BUDGET_MINUTES = 540
+DEFAULT_TASK_BUDGET_MINUTES = 120
+DEFAULT_MAX_CONSECUTIVE_FAILURES = 3
+DEFAULT_NOTIFICATION_BACKEND = "none"
 
 
 @dataclass(frozen=True)
@@ -103,6 +109,9 @@ def _validate_config_types(
 
 
 def _validate_config_values(global_config: GlobalConfig, capabilities: CapabilityConfig) -> None:
+    if len(global_config.pipeline_cron.split()) != 5:
+        raise ConfigError("Invalid config value for pipeline_cron: must be a 5-field cron expression")
+
     positive_int_fields = {
         "pipeline_budget_minutes": global_config.pipeline_budget_minutes,
         "default_task_budget_minutes": global_config.default_task_budget_minutes,
@@ -146,3 +155,40 @@ def load_config(path: Path) -> OmniusConfig:
         capabilities=capabilities,
         repos=repos,
     )
+
+
+def render_default_config(
+    *,
+    timezone: str,
+    runner_default: str,
+    repo_slug: str,
+    repo_path: str,
+    repo_branch: str,
+) -> str:
+    return textwrap.dedent(
+        f"""
+        [global]
+        timezone = "{timezone}"
+        pipeline_cron = "{DEFAULT_PIPELINE_CRON}"
+        pipeline_budget_minutes = {DEFAULT_PIPELINE_BUDGET_MINUTES}
+        default_task_budget_minutes = {DEFAULT_TASK_BUDGET_MINUTES}
+        max_consecutive_failures = {DEFAULT_MAX_CONSECUTIVE_FAILURES}
+        notification_backend = "{DEFAULT_NOTIFICATION_BACKEND}"
+
+        [runner]
+        default = "{runner_default}"
+
+        [capabilities]
+        brainstorm = "auto"
+        review_diff = "auto"
+        autonomous_testing = "auto"
+        second_opinion = "auto"
+
+        [[repos]]
+        slug = "{repo_slug}"
+        path = "{repo_path}"
+        branch = "{repo_branch}"
+        role = "primary"
+        labels = []
+        """
+    ).strip() + "\n"

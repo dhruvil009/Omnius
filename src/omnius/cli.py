@@ -11,6 +11,7 @@ from omnius.config import ConfigError, RepoConfig, load_config
 from omnius.costs import SessionCostRecord, write_session_cost_record
 from omnius.dayprep import run_dayprep
 from omnius.dispatcher import dispatch_manifest, initialize_dispatch_log, update_dispatch_log
+from omnius.install import InstallRequest, LifecycleRequest, run_doctor, run_install, run_uninstall
 from omnius.planner import (
     build_manifest_tasks,
     build_planner_prompt,
@@ -32,6 +33,68 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="omnius")
     subparsers = parser.add_subparsers(dest="command")
 
+    install_parser = subparsers.add_parser(
+        "install",
+        help="Install or update the Omnius scheduler setup",
+        description="Install or update the Omnius scheduler setup",
+    )
+    install_parser.add_argument(
+        "--backend",
+        choices=("cron", "launchd"),
+        help="Override the scheduler backend for this install",
+    )
+    install_parser.add_argument(
+        "--runner",
+        choices=("codex", "claude"),
+        help="Set the default runner when creating a new config",
+    )
+    install_parser.add_argument(
+        "--repo-path",
+        help="Set the primary repo path when creating a new config",
+    )
+    install_parser.add_argument(
+        "--repo-slug",
+        help="Set the primary repo slug when creating a new config",
+    )
+    install_parser.add_argument(
+        "--repo-branch",
+        help="Set the primary repo branch when creating a new config",
+    )
+    install_parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Require flags or repo detection instead of prompting",
+    )
+    install_parser.set_defaults(handler=install_command)
+
+    install_cron_parser = subparsers.add_parser(
+        "install-cron",
+        help="Install or update the Omnius cron schedule",
+        description="Install or update the Omnius cron schedule",
+    )
+    _add_install_creation_arguments(install_cron_parser)
+    install_cron_parser.set_defaults(handler=install_cron_command)
+
+    install_launchd_parser = subparsers.add_parser(
+        "install-launchd",
+        help="Install or update the Omnius launchd schedule",
+        description="Install or update the Omnius launchd schedule",
+    )
+    _add_install_creation_arguments(install_launchd_parser)
+    install_launchd_parser.set_defaults(handler=install_launchd_command)
+
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Show Omnius install and scheduler health",
+        description="Show Omnius install and scheduler health",
+    )
+    doctor_parser.add_argument(
+        "--backend",
+        choices=("cron", "launchd"),
+        help="Inspect a specific scheduler backend",
+    )
+    doctor_parser.set_defaults(handler=doctor_command)
+
     run_parser = subparsers.add_parser(
         "run",
         help="Execute one Omnius pipeline run",
@@ -50,7 +113,77 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable status JSON",
     )
     status_parser.set_defaults(handler=status_command)
+
+    uninstall_parser = subparsers.add_parser(
+        "uninstall",
+        help="Remove Omnius-managed scheduler setup",
+        description="Remove Omnius-managed scheduler setup",
+    )
+    uninstall_parser.add_argument(
+        "--backend",
+        choices=("cron", "launchd"),
+        help="Remove a specific scheduler backend",
+    )
+    uninstall_parser.set_defaults(handler=uninstall_command)
     return parser
+
+
+def install_command(args: argparse.Namespace) -> int:
+    request = _build_install_request(args)
+    return run_install(request=request, workspace_home=_resolve_workspace_home(), cwd=Path.cwd())
+
+
+def install_cron_command(args: argparse.Namespace) -> int:
+    request = _build_install_request(args, backend="cron")
+    return run_install(request=request, workspace_home=_resolve_workspace_home(), cwd=Path.cwd())
+
+
+def install_launchd_command(args: argparse.Namespace) -> int:
+    request = _build_install_request(args, backend="launchd")
+    return run_install(request=request, workspace_home=_resolve_workspace_home(), cwd=Path.cwd())
+
+
+def _build_install_request(args: argparse.Namespace, backend: str | None = None) -> InstallRequest:
+    selected_backend = backend if backend is not None else args.backend
+    return InstallRequest(
+        backend=selected_backend,
+        runner=args.runner,
+        repo_path=args.repo_path,
+        repo_slug=args.repo_slug,
+        repo_branch=args.repo_branch,
+        non_interactive=bool(args.non_interactive),
+    )
+
+
+def _add_install_creation_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--runner",
+        choices=("codex", "claude"),
+        help="Set the default runner when creating a new config",
+    )
+    parser.add_argument(
+        "--repo-path",
+        help="Set the primary repo path when creating a new config",
+    )
+    parser.add_argument(
+        "--repo-slug",
+        help="Set the primary repo slug when creating a new config",
+    )
+    parser.add_argument(
+        "--repo-branch",
+        help="Set the primary repo branch when creating a new config",
+    )
+    parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Require flags or repo detection instead of prompting",
+    )
+
+def doctor_command(args: argparse.Namespace) -> int:
+    return run_doctor(
+        request=LifecycleRequest(backend=args.backend),
+        workspace_home=_resolve_workspace_home(),
+    )
 
 
 def run_command(_args: argparse.Namespace) -> int:
@@ -270,6 +403,13 @@ def status_command(args: argparse.Namespace) -> int:
     else:
         print(render_status_table(snapshot.payload))
     return 0
+
+
+def uninstall_command(args: argparse.Namespace) -> int:
+    return run_uninstall(
+        request=LifecycleRequest(backend=args.backend),
+        workspace_home=_resolve_workspace_home(),
+    )
 
 
 def _allocate_journal_dir(journal_root: Path, run_started_at: datetime) -> Path:
