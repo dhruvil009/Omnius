@@ -59,10 +59,9 @@ class DispatchExecutionTests(unittest.TestCase):
                 branch="main",
             )
 
-            branch = "omnius/2026-05-05/O00001"
             script_path = self._write_worker_script(
                 tmp_path / "success.sh",
-                f'printf \'{{"status":"SUCCESS","branch":"{branch}","summary":"done"}}\\n\'\n',
+                self._commit_success_body(),
             )
             runner = FakeRunner(script_path)
             result = dispatch_manifest(
@@ -92,6 +91,7 @@ class DispatchExecutionTests(unittest.TestCase):
             self.assertEqual(result["pipeline"]["circuit_breaker"]["state"], "closed")
             self.assertEqual(result["pipeline"]["circuit_breaker"]["consecutive_failures"], 0)
 
+            branch = "omnius/2026-05-05/O00001"
             branch_list = subprocess.run(
                 ["git", "-C", str(repo_path), "branch", "--list", branch],
                 check=True,
@@ -99,6 +99,44 @@ class DispatchExecutionTests(unittest.TestCase):
                 text=True,
             )
             self.assertIn(branch, branch_list.stdout)
+
+    def test_dispatch_manifest_downgrades_success_without_artifact_and_keeps_task_active(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            repo_path = self._create_repo_with_origin(tmp_path)
+            home = self._create_workspace_home(tmp_path)
+            self._write_local_task(home)
+
+            journal_dir = home / "journal" / "2026-05-05" / "2100"
+            journal_dir.mkdir(parents=True, exist_ok=True)
+            dispatch_log_path = journal_dir / "dispatch_log.json"
+            initialize_dispatch_log(
+                dispatch_log_path,
+                pipeline_id="pipeline-20260505-210000",
+                runner_name="fake",
+                repo_slug="example",
+                branch="main",
+            )
+
+            script_path = self._write_worker_script(
+                tmp_path / "success-no-artifact.sh",
+                'printf \'{"status":"SUCCESS","branch":"%s","summary":"done"}\\n\' "$OMNIUS_BRANCH"\n',
+            )
+            result = dispatch_manifest(
+                manifest=self._manifest(tasks=[self._local_manifest_task()]),
+                runner=FakeRunner(script_path),
+                config=self._config(repo_path),
+                workspace_home=home,
+                journal_dir=journal_dir,
+                dispatch_log_path=dispatch_log_path,
+            )
+
+            task_state = result["tasks"]["O00001"]
+            self.assertEqual(task_state["status"], "NO_ARTIFACT")
+            self.assertEqual(task_state["summary"], "done")
+            self.assertIn("durable artifact", task_state["reason"])
+            self.assertTrue((home / "tasks" / "O00001_add_sample.md").exists())
+            self.assertFalse((home / "tasks" / "completed" / "O00001_add_sample.md").exists())
 
     def test_dispatch_manifest_records_worker_usage_and_pipeline_total_cost(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -118,12 +156,14 @@ class DispatchExecutionTests(unittest.TestCase):
                 branch="main",
             )
 
-            branch = "omnius/2026-05-05/O00001"
             script_path = self._write_worker_script(
                 tmp_path / "usage-success.sh",
                 textwrap.dedent(
-                    f"""\
-                    printf '{{"status":"SUCCESS","branch":"{branch}","summary":"done","usage":{{"cost_usd":0.18,"turns":47,"input_tokens":142014,"output_tokens":4227,"cache_read_tokens":41022}}}}\\n'
+                    """\
+                    printf '%s\n' 'usage artifact' > omnius_artifact.txt
+                    git add omnius_artifact.txt
+                    git commit -m "omnius artifact $OMNIUS_TASK_ID" >/dev/null
+                    printf '{"status":"SUCCESS","branch":"%s","summary":"done","usage":{"cost_usd":0.18,"turns":47,"input_tokens":142014,"output_tokens":4227,"cache_read_tokens":41022}}\\n' "$OMNIUS_BRANCH"
                     """
                 ),
             )
@@ -284,10 +324,9 @@ class DispatchExecutionTests(unittest.TestCase):
                 branch="main",
             )
 
-            branch = "omnius/2026-05-05/R00001"
             script_path = self._write_worker_script(
                 tmp_path / "recurring-success.sh",
-                f'printf \'{{"status":"SUCCESS","branch":"{branch}","summary":"done"}}\\n\'\n',
+                self._commit_success_body(),
             )
             dispatch_manifest(
                 manifest=self._manifest(tasks=[self._recurring_manifest_task()]),
@@ -421,7 +460,7 @@ class DispatchExecutionTests(unittest.TestCase):
 
             script_path = self._write_worker_script(
                 tmp_path / "success.sh",
-                'printf \'{"status":"SUCCESS","branch":"branch","summary":"done"}\\n\'\n',
+                self._commit_success_body(),
             )
             runner = FakeRunner(script_path)
             with patch("omnius.dispatcher.time.monotonic", side_effect=[0.0, 240.0, 240.0, 300.0]):
@@ -463,7 +502,7 @@ class DispatchExecutionTests(unittest.TestCase):
 
             script_path = self._write_worker_script(
                 tmp_path / "success.sh",
-                'printf \'{"status":"SUCCESS","branch":"branch","summary":"done"}\\n\'\n',
+                self._commit_success_body(),
             )
             default_runner = FakeRunner(script_path, name="codex")
             override_runner = FakeRunner(script_path, name="claude")
@@ -504,7 +543,7 @@ class DispatchExecutionTests(unittest.TestCase):
 
             script_path = self._write_worker_script(
                 tmp_path / "success.sh",
-                'printf \'{"status":"SUCCESS","branch":"branch","summary":"done"}\\n\'\n',
+                self._commit_success_body(),
             )
             with patch("omnius.dispatcher.time.monotonic", side_effect=[0.0, 120.0]):
                 result = dispatch_manifest(
@@ -708,3 +747,11 @@ class DispatchExecutionTests(unittest.TestCase):
         path.write_text(f"#!/bin/sh\nset -eu\n{body}", encoding="utf-8")
         path.chmod(0o755)
         return path
+
+    def _commit_success_body(self) -> str:
+        return (
+            "printf '%s\\n' 'artifact' > omnius_artifact.txt\n"
+            "git add omnius_artifact.txt\n"
+            'git commit -m "omnius artifact $OMNIUS_TASK_ID" >/dev/null\n'
+            'printf \'{"status":"SUCCESS","branch":"%s","summary":"done"}\\n\' "$OMNIUS_BRANCH"\n'
+        )

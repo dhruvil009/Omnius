@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 _ATTENTION_STATUSES = {
+    "NO_ARTIFACT",
     "PARTIAL",
     "BLOCKED",
     "FAILURE",

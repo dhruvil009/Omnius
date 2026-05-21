@@ -256,6 +256,13 @@ def _dispatch_one_task(
             stdout_path=stdout_path,
             branch=branch,
         )
+        task_state = _verify_completion_artifact(
+            task=task,
+            task_state=task_state,
+            worktree_path=worktree_path,
+            base_ref=base_ref,
+            expected_branch=branch,
+        )
         ended_at_wall_clock = _now_iso()
     except _WorkerTimeout:
         task_state = {
@@ -634,6 +641,67 @@ def _classify_worker_result(*, task: DispatchTask, stdout_path: Path, branch: st
     }
 
 
+def _verify_completion_artifact(
+    *,
+    task: DispatchTask,
+    task_state: dict[str, object],
+    worktree_path: Path,
+    base_ref: str,
+    expected_branch: str,
+) -> dict[str, object]:
+    if task_state.get("status") != "SUCCESS":
+        return task_state
+
+    pr_url = _optional_string(task_state.get("pr_url"))
+    if pr_url:
+        task_state["artifact_status"] = "SUCCESS_WITH_ARTIFACT"
+        task_state["artifact_type"] = "pr_url"
+        return task_state
+
+    try:
+        commit_count = _git_ahead_count(worktree_path=worktree_path, base_ref=base_ref)
+        head_commit = _git_rev_parse(worktree_path=worktree_path, ref="HEAD")
+    except subprocess.CalledProcessError as exc:
+        return _downgrade_success_without_artifact(
+            task=task,
+            task_state=task_state,
+            expected_branch=expected_branch,
+            reason=f"Worker declared SUCCESS but Omnius could not verify a durable artifact: {exc}",
+        )
+
+    if commit_count > 0:
+        task_state["artifact_status"] = "SUCCESS_WITH_ARTIFACT"
+        task_state["artifact_type"] = "committed_branch"
+        task_state["artifact_commit_count"] = commit_count
+        task_state["artifact_commit"] = head_commit
+        return task_state
+
+    return _downgrade_success_without_artifact(
+        task=task,
+        task_state=task_state,
+        expected_branch=expected_branch,
+        reason="Worker declared SUCCESS but Omnius could not verify a durable artifact on the task branch.",
+    )
+
+
+def _downgrade_success_without_artifact(
+    *,
+    task: DispatchTask,
+    task_state: dict[str, object],
+    expected_branch: str,
+    reason: str,
+) -> dict[str, object]:
+    downgraded = dict(task_state)
+    downgraded["id"] = task.task_id
+    downgraded["title"] = task.title
+    downgraded["repo_slug"] = task.repo_slug
+    downgraded["status"] = "NO_ARTIFACT"
+    downgraded["branch"] = _optional_string(task_state.get("branch")) or expected_branch
+    downgraded["artifact_status"] = "NO_ARTIFACT"
+    downgraded["reason"] = reason
+    return downgraded
+
+
 def _apply_usage_fields(task_state: dict[str, object], usage: UsageStats | None) -> None:
     if usage is None:
         return
@@ -739,6 +807,26 @@ def _run_git(repo_path: Path, args: list[str]) -> None:
         capture_output=True,
         text=True,
     )
+
+
+def _git_ahead_count(*, worktree_path: Path, base_ref: str) -> int:
+    completed = subprocess.run(
+        ["git", "-C", str(worktree_path), "rev-list", "--count", f"{base_ref}..HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return int(completed.stdout.strip() or "0")
+
+
+def _git_rev_parse(*, worktree_path: Path, ref: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(worktree_path), "rev-parse", "--verify", ref],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip()
 
 
 def _branch_exists(repo_path: Path, branch: str) -> bool:

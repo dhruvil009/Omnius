@@ -12,6 +12,11 @@ Journal: {journal_dir}
 Work only inside the current worktree.
 Implement the task using the instructions below.
 
+Completion contract:
+- `SUCCESS` requires a durable artifact. Commit the finished changes on branch `{branch}`, or include a `pr_url` for already-published work.
+- Do not emit `SUCCESS` for notes-only progress, uncommitted edits, or exploratory work. Emit `PARTIAL`, `BLOCKED`, or `FAILURE` instead.
+- Omnius verifies the branch before archiving the source task. A `SUCCESS` response without a durable artifact is downgraded to `NO_ARTIFACT`.
+
 --- Begin Task ---
 {task_body}
 --- End Task ---

@@ -742,6 +742,9 @@ class RunPipelineTests(unittest.TestCase):
                 fi
                 case "$result" in
                     SUCCESS)
+                        printf '%s\n' "artifact for ${OMNIUS_TASK_ID:-unknown}" > omnius_artifact.txt
+                        git add omnius_artifact.txt
+                        git commit -m "omnius artifact ${OMNIUS_TASK_ID:-unknown}" >/dev/null
                         printf '{"status":"SUCCESS","branch":"%s","summary":"done"%s}\n' "$OMNIUS_BRANCH" "$usage_suffix"
                         ;;
                     PARTIAL)
@@ -836,6 +839,9 @@ class RunPipelineTests(unittest.TestCase):
                 if [ "${OMNIUS_FAKE_RUNNER_LOG:-}" != "" ]; then
                     printf 'claude\n' >> "$OMNIUS_FAKE_RUNNER_LOG"
                 fi
+                printf '%s\n' "artifact for ${OMNIUS_TASK_ID:-unknown}" > omnius_artifact.txt
+                git add omnius_artifact.txt
+                git commit -m "omnius artifact ${OMNIUS_TASK_ID:-unknown}" >/dev/null
                 printf '{"status":"SUCCESS","branch":"%s","summary":"done"}\n' "$OMNIUS_BRANCH"
                 """
             ),
