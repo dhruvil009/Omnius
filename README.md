@@ -16,7 +16,9 @@ Omnius is a runner-agnostic overnight orchestration tool for local development. 
 - recurring-task state tracking and quarantine handling
 - cost ledgering and day-prep brief generation
 - `omnius status` surfaces for the latest recorded run
+- runtime lock controls via `omnius stop` and `omnius recover`
 - per-task `agent` overrides for local tasks (`codex` or `claude`)
+- archival only after workers produce a durable artifact, such as a committed task branch or PR URL
 
 ## Setup
 
@@ -44,6 +46,8 @@ omnius install
 omnius doctor
 omnius run
 omnius status --json
+omnius stop --dry-run
+omnius recover
 omnius uninstall
 ```
 
@@ -61,5 +65,5 @@ The default workspace is `~/.omnius`. Override it with `OMNIUS_HOME=/path/to/wor
 The package targets Python 3.11+ and uses the standard library `unittest` suite.
 
 ```bash
-python3.13 -m unittest -v
+PYTHONPATH=src python3.13 -m unittest discover -s tests
 ```

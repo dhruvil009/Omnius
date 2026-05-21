@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import importlib.resources as resources
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from omnius.config import SUPPORTED_RUNNERS
 from omnius.tasks import LocalTaskEntry, RecurringTaskEntry
@@ -20,6 +20,12 @@ class ManifestTask:
     agent: str | None
     max_time_minutes: int
     complexity: str
+    priority: int
+    source: str
+    project_context: str
+    file_paths: list[str]
+    quality_phases: list[str]
+    completion_contract: dict[str, object]
 
     def as_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -27,14 +33,27 @@ class ManifestTask:
             "title": self.title,
             "type": self.task_type,
             "repo_slug": self.repo_slug,
+            "source": self.source,
             "source_ref": self.source_ref,
             "filename": self.filename,
+            "priority": self.priority,
+            "project_context": self.project_context,
+            "file_paths": list(self.file_paths),
+            "quality_phases": list(self.quality_phases),
+            "completion_contract": dict(self.completion_contract),
             "max_time_minutes": self.max_time_minutes,
             "complexity": self.complexity,
         }
         if self.agent is not None:
             payload["agent"] = self.agent
         return payload
+
+
+@dataclass(frozen=True)
+class PlannerResponseSelection:
+    response_text: str
+    used_runner_output: bool
+    fallback_reason: str | None
 
 
 def load_planner_prompt_template() -> str:
@@ -79,18 +98,46 @@ def parse_planner_response(raw_response: str) -> dict[str, object]:
     return payload
 
 
-def validate_manifest(payload: dict[str, object]) -> None:
+def validate_manifest(payload: dict[str, object], *, allowed_repo_slugs: set[str] | None = None) -> None:
     _validate_against_schema(load_manifest_schema(), payload, path="manifest")
     _validate_task_agents(payload.get("tasks"))
+    _validate_task_ids_are_unique(payload.get("tasks"))
+    _validate_task_source_refs(payload.get("tasks"))
+    if allowed_repo_slugs is not None:
+        _validate_task_repo_slugs(payload.get("tasks"), allowed_repo_slugs=allowed_repo_slugs)
 
 
 def choose_planner_response(*, planner_output: str, fallback_manifest_response: str) -> str:
+    return choose_planner_response_with_metadata(
+        planner_output=planner_output,
+        fallback_manifest_response=fallback_manifest_response,
+    ).response_text
+
+
+def choose_planner_response_with_metadata(*, planner_output: str, fallback_manifest_response: str) -> PlannerResponseSelection:
     try:
         manifest = parse_planner_response(planner_output)
+    except json.JSONDecodeError:
+        return PlannerResponseSelection(
+            response_text=fallback_manifest_response,
+            used_runner_output=False,
+            fallback_reason="invalid_json",
+        )
+    except (ValueError, TypeError) as exc:
+        return PlannerResponseSelection(
+            response_text=fallback_manifest_response,
+            used_runner_output=False,
+            fallback_reason=f"invalid_manifest: {exc}",
+        )
+    try:
         validate_manifest(manifest)
-    except (json.JSONDecodeError, ValueError, TypeError):
-        return fallback_manifest_response
-    return planner_output
+    except (ValueError, TypeError) as exc:
+        return PlannerResponseSelection(
+            response_text=fallback_manifest_response,
+            used_runner_output=False,
+            fallback_reason=f"invalid_manifest: {exc}",
+        )
+    return PlannerResponseSelection(response_text=planner_output, used_runner_output=True, fallback_reason=None)
 
 
 def build_local_manifest_tasks(
@@ -112,6 +159,12 @@ def build_local_manifest_tasks(
                 agent=entry.agent,
                 max_time_minutes=default_task_budget_minutes,
                 complexity="small",
+                priority=3,
+                source="local_queue",
+                project_context="local task queue",
+                file_paths=[],
+                quality_phases=["implement", "verify"],
+                completion_contract=_default_completion_contract(),
             ).as_dict()
         )
     return manifest_tasks
@@ -139,6 +192,12 @@ def build_manifest_tasks(
                 agent=None,
                 max_time_minutes=entry.max_time_minutes or default_task_budget_minutes,
                 complexity=entry.complexity,
+                priority=4,
+                source="recurring_queue",
+                project_context="recurring task queue",
+                file_paths=[],
+                quality_phases=["implement", "verify"],
+                completion_contract=_default_completion_contract(),
             ).as_dict()
         )
     return manifest_tasks
@@ -161,6 +220,48 @@ def _validate_task_agents(raw_tasks: object) -> None:
             raise ValueError(f"Manifest field tasks[{index}].agent must be one of: {', '.join(sorted(SUPPORTED_RUNNERS))}")
 
 
+def _validate_task_ids_are_unique(raw_tasks: object) -> None:
+    if not isinstance(raw_tasks, list):
+        return
+    seen: set[str] = set()
+    for index, raw_task in enumerate(raw_tasks):
+        if not isinstance(raw_task, dict):
+            continue
+        task_id = raw_task.get("id")
+        if not isinstance(task_id, str):
+            continue
+        if task_id in seen:
+            raise ValueError(f"Duplicate manifest task id: {task_id} at tasks[{index}]")
+        seen.add(task_id)
+
+
+def _validate_task_source_refs(raw_tasks: object) -> None:
+    if not isinstance(raw_tasks, list):
+        return
+    for index, raw_task in enumerate(raw_tasks):
+        if not isinstance(raw_task, dict):
+            continue
+        source_ref = raw_task.get("source_ref")
+        if not isinstance(source_ref, str):
+            continue
+        path = PurePosixPath(source_ref)
+        if path.is_absolute() or ".." in path.parts or len(path.parts) < 2 or path.parts[0] != "tasks":
+            raise ValueError(f"Manifest field tasks[{index}].source_ref must stay under tasks/")
+
+
+def _validate_task_repo_slugs(raw_tasks: object, *, allowed_repo_slugs: set[str]) -> None:
+    if not isinstance(raw_tasks, list):
+        return
+    for index, raw_task in enumerate(raw_tasks):
+        if not isinstance(raw_task, dict):
+            continue
+        repo_slug = raw_task.get("repo_slug")
+        if not isinstance(repo_slug, str):
+            continue
+        if repo_slug not in allowed_repo_slugs:
+            raise ValueError(f"Manifest task {index} referenced unknown repo_slug: {repo_slug}")
+
+
 def _validate_against_schema(schema: object, value: object, *, path: str) -> None:
     if not isinstance(schema, dict):
         raise ValueError("Manifest schema must be a JSON object")
@@ -168,6 +269,14 @@ def _validate_against_schema(schema: object, value: object, *, path: str) -> Non
     expected_type = schema.get("type")
     if isinstance(expected_type, str):
         _validate_type(expected_type, value, path=path)
+
+    enum_values = schema.get("enum")
+    if isinstance(enum_values, list) and value not in enum_values:
+        raise ValueError(f"Manifest field {path} must be one of: {', '.join(str(item) for item in enum_values)}")
+
+    minimum = schema.get("minimum")
+    if isinstance(minimum, int) and isinstance(value, int) and value < minimum:
+        raise ValueError(f"Manifest field {path} must be >= {minimum}")
 
     if expected_type == "object":
         assert isinstance(value, dict)
@@ -212,6 +321,10 @@ def _validate_type(expected_type: str, value: object, *, path: str) -> None:
         if type(value) is not int:
             raise ValueError(f"Manifest field {path} must be an integer")
         return
+    if expected_type == "boolean":
+        if type(value) is not bool:
+            raise ValueError(f"Manifest field {path} must be a boolean")
+        return
     raise ValueError(f"Unsupported schema type: {expected_type}")
 
 
@@ -245,3 +358,10 @@ def _require_frontmatter_value(metadata: dict[str, str], key: str, task_id: str)
     if not value:
         raise ValueError(f"Task {task_id} frontmatter must define '{key}'")
     return value
+
+
+def _default_completion_contract() -> dict[str, object]:
+    return {
+        "artifact": "committed_branch_or_pr",
+        "archive_on": "SUCCESS_WITH_ARTIFACT",
+    }

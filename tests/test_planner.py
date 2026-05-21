@@ -7,6 +7,7 @@ from omnius.planner import (
     build_manifest_tasks,
     build_planner_prompt,
     choose_planner_response,
+    choose_planner_response_with_metadata,
     load_manifest_schema,
     load_planner_prompt_template,
     parse_planner_response,
@@ -96,6 +97,30 @@ class PlannerTests(unittest.TestCase):
 
         self.assertEqual(chosen, fallback_manifest)
 
+    def test_choose_planner_response_with_metadata_records_fallback_reason(self) -> None:
+        fallback_manifest = '{"run_date":"2026-05-06","journal_dir":"/tmp/journal","summary":"fallback","tasks":[],"skipped":[],"notes":"stub"}\n'
+
+        selection = choose_planner_response_with_metadata(
+            planner_output="not valid json",
+            fallback_manifest_response=fallback_manifest,
+        )
+
+        self.assertEqual(selection.response_text, fallback_manifest)
+        self.assertFalse(selection.used_runner_output)
+        self.assertEqual(selection.fallback_reason, "invalid_json")
+
+    def test_choose_planner_response_with_metadata_falls_back_for_non_object_json(self) -> None:
+        fallback_manifest = '{"run_date":"2026-05-06","journal_dir":"/tmp/journal","summary":"fallback","tasks":[],"skipped":[],"notes":"stub"}\n'
+
+        selection = choose_planner_response_with_metadata(
+            planner_output="[]",
+            fallback_manifest_response=fallback_manifest,
+        )
+
+        self.assertEqual(selection.response_text, fallback_manifest)
+        self.assertFalse(selection.used_runner_output)
+        self.assertTrue(selection.fallback_reason.startswith("invalid_manifest"))
+
     def test_validate_manifest_accepts_minimal_milestone_one_contract(self) -> None:
         manifest = {
             "run_date": "2026-05-03",
@@ -107,6 +132,41 @@ class PlannerTests(unittest.TestCase):
         }
 
         validate_manifest(manifest)
+
+    def test_validate_manifest_accepts_v2_contract_fields(self) -> None:
+        manifest = {
+            "version": 2,
+            "created_at": "2026-05-21T21:00:00-07:00",
+            "mode": "planner",
+            "run_date": "2026-05-21",
+            "journal_dir": "/tmp/journal",
+            "summary": "1 task planned",
+            "tasks": [
+                {
+                    "id": "O00001",
+                    "title": "Add sample",
+                    "type": "implementation",
+                    "repo_slug": "example",
+                    "source": "local_queue",
+                    "source_ref": "tasks/O00001_add_sample.md",
+                    "filename": "O00001_add_sample.md",
+                    "priority": 3,
+                    "project_context": "repo-local task",
+                    "file_paths": ["README.md"],
+                    "quality_phases": ["implement", "verify"],
+                    "completion_contract": {
+                        "artifact": "committed_branch_or_pr",
+                        "archive_on": "SUCCESS_WITH_ARTIFACT",
+                    },
+                    "max_time_minutes": 120,
+                    "complexity": "small",
+                }
+            ],
+            "skipped": [{"id": "O00002", "skip_reason": "budget"}],
+            "notes": "stub",
+        }
+
+        validate_manifest(manifest, allowed_repo_slugs={"example"})
 
     def test_validate_manifest_accepts_typed_implementation_task(self) -> None:
         manifest = {
@@ -131,6 +191,88 @@ class PlannerTests(unittest.TestCase):
         }
 
         validate_manifest(manifest)
+
+    def test_validate_manifest_rejects_duplicate_task_ids(self) -> None:
+        manifest = {
+            "run_date": "2026-05-05",
+            "journal_dir": "/tmp/journal",
+            "summary": "2 tasks planned",
+            "tasks": [
+                {
+                    "id": "O00001",
+                    "title": "Add sample",
+                    "type": "implementation",
+                    "repo_slug": "example",
+                    "source_ref": "tasks/O00001_add_sample.md",
+                    "filename": "O00001_add_sample.md",
+                    "max_time_minutes": 120,
+                    "complexity": "small",
+                },
+                {
+                    "id": "O00001",
+                    "title": "Duplicate",
+                    "type": "implementation",
+                    "repo_slug": "example",
+                    "source_ref": "tasks/O00001_duplicate.md",
+                    "filename": "O00001_duplicate.md",
+                    "max_time_minutes": 120,
+                    "complexity": "small",
+                },
+            ],
+            "skipped": [],
+            "notes": "stub",
+        }
+
+        with self.assertRaisesRegex(ValueError, "Duplicate manifest task id"):
+            validate_manifest(manifest)
+
+    def test_validate_manifest_rejects_source_refs_outside_tasks_dir(self) -> None:
+        manifest = {
+            "run_date": "2026-05-05",
+            "journal_dir": "/tmp/journal",
+            "summary": "1 task planned",
+            "tasks": [
+                {
+                    "id": "O00001",
+                    "title": "Add sample",
+                    "type": "implementation",
+                    "repo_slug": "example",
+                    "source_ref": "../outside.md",
+                    "filename": "outside.md",
+                    "max_time_minutes": 120,
+                    "complexity": "small",
+                }
+            ],
+            "skipped": [],
+            "notes": "stub",
+        }
+
+        with self.assertRaisesRegex(ValueError, "source_ref"):
+            validate_manifest(manifest)
+
+    def test_validate_manifest_rejects_unknown_repo_slugs_when_allowed_set_is_provided(self) -> None:
+        manifest = {
+            "run_date": "2026-05-05",
+            "journal_dir": "/tmp/journal",
+            "summary": "1 task planned",
+            "tasks": [
+                {
+                    "id": "O00001",
+                    "title": "Add sample",
+                    "type": "implementation",
+                    "repo_slug": "missing",
+                    "source_ref": "tasks/O00001_add_sample.md",
+                    "filename": "O00001_add_sample.md",
+                    "max_time_minutes": 120,
+                    "complexity": "small",
+                }
+            ],
+            "skipped": [],
+            "notes": "stub",
+        }
+
+        with self.assertRaisesRegex(ValueError, "unknown repo_slug"):
+            validate_manifest(manifest, allowed_repo_slugs={"example"})
 
     def test_validate_manifest_rejects_invalid_task_agent(self) -> None:
         with self.assertRaisesRegex(ValueError, "agent"):
@@ -205,8 +347,17 @@ class PlannerTests(unittest.TestCase):
                     "title": "Add sample",
                     "type": "implementation",
                     "repo_slug": "example",
+                    "source": "local_queue",
                     "source_ref": "tasks/O00001_add_sample.md",
                     "filename": "O00001_add_sample.md",
+                    "priority": 3,
+                    "project_context": "local task queue",
+                    "file_paths": [],
+                    "quality_phases": ["implement", "verify"],
+                    "completion_contract": {
+                        "artifact": "committed_branch_or_pr",
+                        "archive_on": "SUCCESS_WITH_ARTIFACT",
+                    },
                     "agent": "claude",
                     "max_time_minutes": 120,
                     "complexity": "small",
@@ -216,8 +367,17 @@ class PlannerTests(unittest.TestCase):
                     "title": "Daily cleanup",
                     "type": "maintenance",
                     "repo_slug": "example",
+                    "source": "recurring_queue",
                     "source_ref": "tasks/recurring/R00001_daily_cleanup.md",
                     "filename": "R00001_daily_cleanup.md",
+                    "priority": 4,
+                    "project_context": "recurring task queue",
+                    "file_paths": [],
+                    "quality_phases": ["implement", "verify"],
+                    "completion_contract": {
+                        "artifact": "committed_branch_or_pr",
+                        "archive_on": "SUCCESS_WITH_ARTIFACT",
+                    },
                     "max_time_minutes": 45,
                     "complexity": "medium",
                 },

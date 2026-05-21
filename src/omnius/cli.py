@@ -16,7 +16,7 @@ from omnius.install import InstallRequest, LifecycleRequest, run_doctor, run_ins
 from omnius.planner import (
     build_manifest_tasks,
     build_planner_prompt,
-    choose_planner_response,
+    choose_planner_response_with_metadata,
     load_planner_prompt_template,
     parse_planner_response,
     validate_manifest,
@@ -339,14 +339,15 @@ def run_command(_args: argparse.Namespace) -> int:
             default_task_budget_minutes=config.global_config.default_task_budget_minutes,
             planner_plan_text=planner_invocation.plan_text,
         )
-        planner_response = choose_planner_response(
+        planner_selection = choose_planner_response_with_metadata(
             planner_output=planner_invocation.plan_text,
             fallback_manifest_response=synthesized_planner_response,
         )
+        planner_response = planner_selection.response_text
         (journal_dir / "planner_response.json").write_text(planner_response, encoding="utf-8")
 
         manifest = parse_planner_response(planner_response)
-        validate_manifest(manifest)
+        validate_manifest(manifest, allowed_repo_slugs={repo.slug for repo in config.repos})
         _write_json(journal_dir / "manifest.json", manifest)
         planner_pipeline_patch: dict[str, object] = {}
         if planner_invocation.usage is not None and planner_invocation.usage.cost_usd is not None:
@@ -358,7 +359,8 @@ def run_command(_args: argparse.Namespace) -> int:
                 "planner": {
                     "task_id": planner_invocation.task_id,
                     "runner_name": planner_invocation.runner_name,
-                    "used_runner_output": planner_response == planner_invocation.plan_text,
+                    "used_runner_output": planner_selection.used_runner_output,
+                    "fallback_reason": planner_selection.fallback_reason,
                     "recurring_state": {
                         "suspect_path": (
                             str(prefetch_snapshot.recurring_state_suspect_path)
@@ -559,6 +561,9 @@ def _build_manifest_response(
         recurring_count=len(due_recurring_task_entries),
     )
     payload = {
+        "version": 2,
+        "created_at": datetime.now().astimezone().isoformat(),
+        "mode": "fallback_synthesized",
         "run_date": run_date,
         "journal_dir": str(journal_dir),
         "summary": summary,

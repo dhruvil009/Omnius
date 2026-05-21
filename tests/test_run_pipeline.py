@@ -59,8 +59,17 @@ class RunPipelineTests(unittest.TestCase):
                         "title": "Add sample",
                         "type": "implementation",
                         "repo_slug": "example",
+                        "source": "local_queue",
                         "source_ref": "tasks/O00001_add_sample.md",
                         "filename": "O00001_add_sample.md",
+                        "priority": 3,
+                        "project_context": "local task queue",
+                        "file_paths": [],
+                        "quality_phases": ["implement", "verify"],
+                        "completion_contract": {
+                            "artifact": "committed_branch_or_pr",
+                            "archive_on": "SUCCESS_WITH_ARTIFACT",
+                        },
                         "max_time_minutes": 120,
                         "complexity": "small",
                     }
@@ -243,8 +252,17 @@ class RunPipelineTests(unittest.TestCase):
                         "title": "Add sample",
                         "type": "implementation",
                         "repo_slug": "example",
+                        "source": "local_queue",
                         "source_ref": "tasks/O00001_add_sample.md",
                         "filename": "O00001_add_sample.md",
+                        "priority": 3,
+                        "project_context": "local task queue",
+                        "file_paths": [],
+                        "quality_phases": ["implement", "verify"],
+                        "completion_contract": {
+                            "artifact": "committed_branch_or_pr",
+                            "archive_on": "SUCCESS_WITH_ARTIFACT",
+                        },
                         "max_time_minutes": 120,
                         "complexity": "small",
                     },
@@ -253,8 +271,17 @@ class RunPipelineTests(unittest.TestCase):
                         "title": "Daily cleanup",
                         "type": "maintenance",
                         "repo_slug": "example",
+                        "source": "recurring_queue",
                         "source_ref": "tasks/recurring/R00001_daily_cleanup.md",
                         "filename": "R00001_daily_cleanup.md",
+                        "priority": 4,
+                        "project_context": "recurring task queue",
+                        "file_paths": [],
+                        "quality_phases": ["implement", "verify"],
+                        "completion_contract": {
+                            "artifact": "committed_branch_or_pr",
+                            "archive_on": "SUCCESS_WITH_ARTIFACT",
+                        },
                         "max_time_minutes": 45,
                         "complexity": "medium",
                     },
@@ -296,6 +323,7 @@ class RunPipelineTests(unittest.TestCase):
             self.assertEqual([task["id"] for task in manifest["tasks"]], ["O00001"])
             self.assertEqual(dispatch_log["pipeline"]["status"], "completed")
             self.assertFalse(dispatch_log["planner"]["used_runner_output"])
+            self.assertEqual(dispatch_log["planner"]["fallback_reason"], "invalid_json")
 
     def test_run_command_surfaces_quarantined_recurring_state_in_prompt_and_dispatch_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

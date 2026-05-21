@@ -10,6 +10,20 @@
     "notes"
   ],
   "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "planner",
+        "fallback_synthesized"
+      ]
+    },
     "run_date": {
       "type": "string"
     },
@@ -46,6 +60,17 @@
           "repo_slug": {
             "type": "string"
           },
+          "source": {
+            "type": "string",
+            "enum": [
+              "local_queue",
+              "recurring_queue",
+              "github_issue",
+              "pr_review",
+              "manual",
+              "fallback"
+            ]
+          },
           "source_ref": {
             "type": "string"
           },
@@ -58,14 +83,55 @@
           "max_time_minutes": {
             "type": "integer"
           },
+          "priority": {
+            "type": "integer",
+            "minimum": 1
+          },
           "complexity": {
             "type": "string"
+          },
+          "project_context": {
+            "type": "string"
+          },
+          "file_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "quality_phases": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "completion_contract": {
+            "type": "object",
+            "properties": {
+              "artifact": {
+                "type": "string"
+              },
+              "archive_on": {
+                "type": "string"
+              }
+            }
           }
         }
       }
     },
     "skipped": {
-      "type": "array"
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "skip_reason": {
+            "type": "string"
+          }
+        }
+      }
     },
     "notes": {
       "type": "string"
