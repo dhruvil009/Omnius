@@ -42,6 +42,8 @@ class CliSmokeTests(unittest.TestCase):
         self.assertIn("uninstall", stdout.getvalue())
         self.assertIn("run", stdout.getvalue())
         self.assertIn("status", stdout.getvalue())
+        self.assertIn("stop", stdout.getvalue())
+        self.assertIn("recover", stdout.getvalue())
 
     @unittest.skipIf(sys.version_info < (3, 11), "package requires Python >= 3.11")
     @unittest.skipUnless(HAS_SETUPTOOLS, "setuptools is required for console-script install coverage")
@@ -106,6 +108,8 @@ class CliSmokeTests(unittest.TestCase):
         self.assertIn("uninstall", result.stdout)
         self.assertIn("run", result.stdout)
         self.assertIn("status", result.stdout)
+        self.assertIn("stop", result.stdout)
+        self.assertIn("recover", result.stdout)
 
     def test_install_help_mentions_scheduler_setup(self) -> None:
         result = self.run_cli("install", "--help")
@@ -144,6 +148,18 @@ class CliSmokeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("Show the latest Omnius run summary", result.stdout)
         self.assertIn("--json", result.stdout)
+
+    def test_stop_help_mentions_runtime_lock_controls(self) -> None:
+        result = self.run_cli("stop", "--help")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Stop a running Omnius pipeline", result.stdout)
+        self.assertIn("--dry-run", result.stdout)
+        self.assertIn("--force", result.stdout)
+
+    def test_recover_help_mentions_stale_lock_cleanup(self) -> None:
+        result = self.run_cli("recover", "--help")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Recover from a stale Omnius runtime lock", result.stdout)
 
     def test_allocate_journal_dir_appends_suffix_when_base_path_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

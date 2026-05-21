@@ -5,6 +5,7 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path
+import signal
 import sys
 
 from omnius.config import ConfigError, RepoConfig, load_config
@@ -23,6 +24,7 @@ from omnius.planner import (
 from omnius.prefetch import collect_prefetch_snapshot
 from omnius.preflight import run_preflight
 from omnius.runners import get_runner
+from omnius.runtime import PipelineAlreadyRunning, acquire_pipeline_lock, recover_pipeline_lock, stop_pipeline
 from omnius.status import load_status_snapshot, render_status_table
 from omnius.workspace import bootstrap_workspace
 
@@ -114,6 +116,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     status_parser.set_defaults(handler=status_command)
 
+    stop_parser = subparsers.add_parser(
+        "stop",
+        help="Stop a running Omnius pipeline",
+        description="Stop a running Omnius pipeline",
+    )
+    stop_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report the running pipeline without signaling it",
+    )
+    stop_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Signal the active worker and pipeline process, then remove the runtime lock",
+    )
+    stop_parser.set_defaults(handler=stop_command)
+
+    recover_parser = subparsers.add_parser(
+        "recover",
+        help="Recover from a stale Omnius runtime lock",
+        description="Recover from a stale Omnius runtime lock",
+    )
+    recover_parser.set_defaults(handler=recover_command)
+
     uninstall_parser = subparsers.add_parser(
         "uninstall",
         help="Remove Omnius-managed scheduler setup",
@@ -199,12 +225,25 @@ def run_command(_args: argparse.Namespace) -> int:
     run_started_at = datetime.now().astimezone()
     run_date = run_started_at.strftime("%Y-%m-%d")
     journal_dir = _allocate_journal_dir(workspace_paths.journal_dir, run_started_at)
+    pipeline_id = run_started_at.strftime("pipeline-%Y%m%d-%H%M%S")
     primary_repo = config.repos[0] if config.repos else None
 
     dispatch_log_path = journal_dir / "dispatch_log.json"
+    try:
+        pipeline_lock = acquire_pipeline_lock(
+            state_dir=workspace_home / "state",
+            pipeline_id=pipeline_id,
+            journal_dir=journal_dir,
+            runner_name=runner.name,
+        )
+    except PipelineAlreadyRunning as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    previous_signal_handlers = _install_runtime_signal_handlers(pipeline_lock)
     initialize_dispatch_log(
         dispatch_log_path,
-        pipeline_id=run_started_at.strftime("pipeline-%Y%m%d-%H%M%S"),
+        pipeline_id=pipeline_id,
         runner_name=runner.name,
         repo_slug=primary_repo.slug if primary_repo is not None else "<none>",
         branch=primary_repo.branch if primary_repo is not None else "<none>",
@@ -221,11 +260,13 @@ def run_command(_args: argparse.Namespace) -> int:
         },
     )
     if primary_repo is None:
-        return _finalize_pipeline_failure(
+        exit_code = _finalize_pipeline_failure(
             dispatch_log_path,
             abort_reason="config",
             error="Config must define at least one repo for 'omnius run'",
         )
+        _release_runtime_lock(pipeline_lock, previous_signal_handlers)
+        return exit_code
 
     try:
         preflight = run_preflight(
@@ -258,6 +299,7 @@ def run_command(_args: argparse.Namespace) -> int:
                     },
                 },
             )
+            _release_runtime_lock(pipeline_lock, previous_signal_handlers)
             return 1
 
         prefetch_snapshot = collect_prefetch_snapshot(
@@ -347,6 +389,10 @@ def run_command(_args: argparse.Namespace) -> int:
             journal_dir=journal_dir,
             dispatch_log_path=dispatch_log_path,
             planner_usage=planner_invocation.usage,
+            worker_observer=lambda pid, pgid: pipeline_lock.update_worker(
+                active_worker_pid=pid,
+                active_worker_pgid=pgid,
+            ),
         )
         dayprep_result = run_dayprep(
             runner=runner,
@@ -366,11 +412,13 @@ def run_command(_args: argparse.Namespace) -> int:
             },
         )
     except Exception as exc:
-        return _finalize_pipeline_failure(
+        exit_code = _finalize_pipeline_failure(
             dispatch_log_path,
             abort_reason="pipeline_error",
             error=str(exc),
         )
+        _release_runtime_lock(pipeline_lock, previous_signal_handlers)
+        return exit_code
 
     update_dispatch_log(
         dispatch_log_path,
@@ -381,7 +429,9 @@ def run_command(_args: argparse.Namespace) -> int:
             },
         },
     )
-    return 0 if _all_tasks_succeeded(dispatch_result) else 1
+    exit_code = 0 if _all_tasks_succeeded(dispatch_result) else 1
+    _release_runtime_lock(pipeline_lock, previous_signal_handlers)
+    return exit_code
 
 
 def _resolve_workspace_home() -> Path:
@@ -402,6 +452,26 @@ def status_command(args: argparse.Namespace) -> int:
         print(json.dumps(snapshot.payload, indent=2, sort_keys=True))
     else:
         print(render_status_table(snapshot.payload))
+    return 0
+
+
+def stop_command(args: argparse.Namespace) -> int:
+    result = stop_pipeline(
+        state_dir=_resolve_workspace_home() / "state",
+        dry_run=bool(args.dry_run),
+        force=bool(args.force),
+    )
+    message = _render_stop_result(result.status, result.payload, result.removed_lock)
+    if result.status == "force_required":
+        print(message, file=sys.stderr)
+        return 1
+    print(message)
+    return 0
+
+
+def recover_command(_args: argparse.Namespace) -> int:
+    result = recover_pipeline_lock(state_dir=_resolve_workspace_home() / "state")
+    print(_render_recover_result(result.status, result.payload, result.removed_lock))
     return 0
 
 
@@ -440,6 +510,33 @@ def _render_repos_table(repos: list[RepoConfig]) -> str:
     if not repos:
         return "<none>"
     return "\n".join(f"{repo.slug} | {repo.path} | {repo.branch} | {repo.role}" for repo in repos)
+
+
+def _install_runtime_signal_handlers(pipeline_lock: object) -> dict[int, object]:
+    previous_handlers: dict[int, object] = {}
+
+    def handle_signal(signum: int, _frame: object) -> None:
+        release = getattr(pipeline_lock, "release", None)
+        if callable(release):
+            release()
+        previous = previous_handlers.get(signum)
+        if callable(previous):
+            previous(signum, _frame)
+            return
+        raise SystemExit(128 + signum)
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        previous_handlers[int(signum)] = signal.getsignal(signum)
+        signal.signal(signum, handle_signal)
+    return previous_handlers
+
+
+def _release_runtime_lock(pipeline_lock: object, previous_signal_handlers: dict[int, object]) -> None:
+    release = getattr(pipeline_lock, "release", None)
+    if callable(release):
+        release()
+    for signum, previous in previous_signal_handlers.items():
+        signal.signal(signum, previous)
 
 
 def _build_manifest_response(
@@ -483,6 +580,44 @@ def _build_manifest_summary(*, local_count: int, recurring_count: int) -> str:
     if local_count == 0:
         return f"{total_count} task(s) planned from recurring queue"
     return f"{total_count} task(s) planned from local and recurring queues"
+
+
+def _render_stop_result(status: str, payload: dict[str, object] | None, removed_lock: bool) -> str:
+    if payload is None:
+        return "No Omnius pipeline lock found."
+    label = _runtime_lock_label(payload)
+    if status == "running":
+        return f"Omnius pipeline is running: {label}"
+    if status == "stale":
+        return f"Omnius pipeline lock is stale: {label}"
+    if status == "signaled":
+        suffix = " Removed runtime lock." if removed_lock else ""
+        return f"Signaled Omnius pipeline: {label}.{suffix}"
+    if status == "stale_removed":
+        return f"Removed stale Omnius pipeline lock: {label}"
+    if status == "force_required":
+        return f"Omnius pipeline is running: {label}. Re-run with --force to stop it."
+    return f"Omnius pipeline state: {status}: {label}"
+
+
+def _render_recover_result(status: str, payload: dict[str, object] | None, removed_lock: bool) -> str:
+    if payload is None:
+        return "No Omnius pipeline lock found."
+    label = _runtime_lock_label(payload)
+    if status == "running":
+        return f"Omnius pipeline is still running: {label}"
+    if status == "stale_removed":
+        suffix = " Removed runtime lock." if removed_lock else ""
+        return f"Recovered stale Omnius pipeline lock: {label}.{suffix}"
+    return f"Omnius pipeline recovery state: {status}: {label}"
+
+
+def _runtime_lock_label(payload: dict[str, object]) -> str:
+    return (
+        f"pipeline_id={payload.get('pipeline_id', '<unknown>')} "
+        f"pid={payload.get('pid', '<unknown>')} "
+        f"journal={payload.get('journal_dir', '<unknown>')}"
+    )
 
 
 def _finalize_pipeline_failure(

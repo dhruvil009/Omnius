@@ -73,7 +73,34 @@ class RunPipelineTests(unittest.TestCase):
             self.assertEqual(dispatch_log["tasks"]["O00001"]["summary"], "done")
             self.assertTrue((home / "tasks" / "completed" / "O00001_add_sample.md").exists())
             self.assertFalse((home / "tasks" / "O00001_add_sample.md").exists())
+            self.assertFalse((home / "state" / "pipeline.pid").exists())
             self.assertFalse((repo / ".omnius" / "worktrees" / journal_dir.parent.name / "O00001").exists())
+
+    def test_run_command_refuses_to_start_when_pipeline_lock_is_live(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            home = tmp_path / ".omnius"
+            repo = self._create_repo_with_origin(tmp_path)
+
+            self._write_config(home=home, repo=repo)
+            self._write_local_task(home)
+            (home / "state").mkdir(parents=True, exist_ok=True)
+            (home / "state" / "pipeline.pid").write_text(
+                json.dumps({"pid": os.getpid(), "pipeline_id": "pipeline-existing"}) + "\n",
+                encoding="utf-8",
+            )
+            fake_bin, fake_codex = self._write_fake_run_binaries(tmp_path)
+
+            result = self._run_cli(
+                home=home,
+                fake_bin=fake_bin,
+                extra_env={"OMNIUS_CODEX_BIN": str(fake_codex)},
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("already running", result.stderr)
+            self.assertTrue((home / "tasks" / "O00001_add_sample.md").exists())
+            self.assertFalse((home / "tasks" / "completed" / "O00001_add_sample.md").exists())
 
     def test_status_command_reports_latest_run_after_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

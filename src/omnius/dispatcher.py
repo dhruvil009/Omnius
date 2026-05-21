@@ -107,6 +107,7 @@ def dispatch_manifest(
     dispatch_log_path: Path,
     planner_usage: UsageStats | None = None,
     runner_resolver: Callable[[str], RunnerAdapter] = get_runner,
+    worker_observer: Callable[[int | None, int | None], None] | None = None,
 ) -> dict[str, object]:
     repo_lookup = {repo.slug: repo for repo in config.repos}
     run_date = date.fromisoformat(str(manifest["run_date"]))
@@ -157,6 +158,7 @@ def dispatch_manifest(
             journal_dir=journal_dir,
             max_time_minutes=min(task.max_time_minutes, remaining_budget_minutes),
             agent=effective_agent,
+            worker_observer=worker_observer,
         )
         elapsed_pipeline_seconds += float(task_state["duration_seconds"])
         _apply_task_side_effects(
@@ -211,6 +213,7 @@ def _dispatch_one_task(
     journal_dir: Path,
     max_time_minutes: float,
     agent: str,
+    worker_observer: Callable[[int | None, int | None], None] | None = None,
 ) -> dict[str, object]:
     started_at = time.monotonic()
     started_at_wall_clock = _now_iso()
@@ -250,6 +253,7 @@ def _dispatch_one_task(
             request=request,
             stdout_path=stdout_path,
             stderr_path=stderr_path,
+            worker_observer=worker_observer,
         )
         task_state = _classify_worker_result(
             task=task,
@@ -481,6 +485,7 @@ def _run_worker_process(
     request: WorkerRequest,
     stdout_path: Path,
     stderr_path: Path,
+    worker_observer: Callable[[int | None, int | None], None] | None = None,
 ) -> None:
     worker_env = {
         **os.environ,
@@ -503,19 +508,32 @@ def _run_worker_process(
                 text=True,
                 start_new_session=True,
             )
-            timeout_seconds = request.max_time_minutes * 60
+            if worker_observer is not None:
+                worker_observer(process.pid, _process_group_id(process.pid))
             try:
-                process.wait(timeout=timeout_seconds)
-            except subprocess.TimeoutExpired as exc:
-                _terminate_process_group(process)
+                timeout_seconds = request.max_time_minutes * 60
                 try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    pass
-                raise _WorkerTimeout from exc
-            if process.returncode not in (0, 1):
-                # Non-zero exit codes are still interpreted through the JSON envelope.
-                return
+                    process.wait(timeout=timeout_seconds)
+                except subprocess.TimeoutExpired as exc:
+                    _terminate_process_group(process)
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    raise _WorkerTimeout from exc
+                if process.returncode not in (0, 1):
+                    # Non-zero exit codes are still interpreted through the JSON envelope.
+                    return
+            finally:
+                if worker_observer is not None:
+                    worker_observer(None, None)
+
+
+def _process_group_id(pid: int) -> int | None:
+    try:
+        return os.getpgid(pid)
+    except ProcessLookupError:
+        return None
 
 
 def _terminate_process_group(process: subprocess.Popen[str]) -> None:
