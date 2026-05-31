@@ -87,7 +87,12 @@ class InstallCommandTests(unittest.TestCase):
             self.assertIn('[runner]\ndefault = "codex"', config_text)
             self.assertIn('slug = "repo"', config_text)
             self.assertIn(str(repo), config_text)
-            self.assertIn("BEGIN OMNIUS", crontab_state.read_text(encoding="utf-8"))
+            crontab_text = crontab_state.read_text(encoding="utf-8")
+            self.assertIn("BEGIN OMNIUS", crontab_text)
+            self.assertIn(f"OMNIUS_HOME={home}", crontab_text)
+            self.assertIn("OMNIUS_SCHEDULED=1", crontab_text)
+            self.assertIn("TZ=", crontab_text)
+            self.assertIn("PATH=", crontab_text)
 
     def test_uninstall_removes_only_omnius_managed_cron_block(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -225,6 +230,76 @@ class InstallCommandTests(unittest.TestCase):
             self.assertIn("backend: cron", doctor_result.stdout)
             self.assertIn("installed: yes", doctor_result.stdout)
             self.assertIn("matches_config: yes", doctor_result.stdout)
+
+    def test_doctor_reports_mismatch_when_cron_environment_does_not_match_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            home = tmp_path / ".omnius"
+            repo = tmp_path / "repo"
+            fake_bin = tmp_path / "bin"
+            repo.mkdir()
+            fake_bin.mkdir()
+            subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+            (home / "state").mkdir(parents=True)
+            (home / "omnius.toml").write_text(
+                (
+                    "[global]\n"
+                    'timezone = "America/Los_Angeles"\n'
+                    'pipeline_cron = "0 21 * * 0-4"\n'
+                    "pipeline_budget_minutes = 540\n"
+                    "default_task_budget_minutes = 120\n"
+                    "max_consecutive_failures = 3\n"
+                    'notification_backend = "none"\n\n'
+                    "[runner]\n"
+                    'default = "codex"\n\n'
+                    "[capabilities]\n"
+                    'brainstorm = "auto"\n'
+                    'review_diff = "auto"\n'
+                    'autonomous_testing = "auto"\n'
+                    'second_opinion = "auto"\n\n'
+                    "[[repos]]\n"
+                    'slug = "repo"\n'
+                    f'path = "{repo}"\n'
+                    'branch = "main"\n'
+                    'role = "primary"\n'
+                    "labels = []\n"
+                ),
+                encoding="utf-8",
+            )
+            crontab_state = tmp_path / "crontab.txt"
+            crontab_state.write_text(
+                "# BEGIN OMNIUS\n"
+                "0 21 * * 0-4 cd $HOME && /tmp/python3 -m omnius run >> $HOME/.omnius/logs/omnius-cron.log 2>&1\n"
+                "# END OMNIUS\n",
+                encoding="utf-8",
+            )
+            self._write_executable(
+                fake_bin / "crontab",
+                (
+                    "#!/bin/sh\n"
+                    "STATE_FILE=\"$OMNIUS_TEST_CRONTAB_FILE\"\n"
+                    "if [ \"$1\" = \"-l\" ]; then\n"
+                    "  cat \"$STATE_FILE\"\n"
+                    "  exit 0\n"
+                    "fi\n"
+                    "exit 2\n"
+                ),
+            )
+
+            doctor_result = self.run_cli(
+                "doctor",
+                "--backend",
+                "cron",
+                env_overrides={
+                    "OMNIUS_HOME": str(home),
+                    "OMNIUS_TEST_CRONTAB_FILE": str(crontab_state),
+                    "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                },
+            )
+
+            self.assertEqual(doctor_result.returncode, 0, doctor_result.stderr)
+            self.assertIn("installed: yes", doctor_result.stdout)
+            self.assertIn("matches_config: no", doctor_result.stdout)
 
     @unittest.skipUnless(sys.platform == "darwin", "launchd backend is macOS-only")
     def test_install_launchd_writes_plist_and_uninstall_removes_it(self) -> None:

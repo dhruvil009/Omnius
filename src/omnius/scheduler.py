@@ -21,6 +21,21 @@ class SchedulerStatus:
     matches_config: bool
     location: str
     command: list[str]
+    environment: dict[str, str]
+
+
+def build_scheduler_environment(
+    *,
+    workspace_home: Path,
+    timezone: str,
+    path_env: str | None = None,
+) -> dict[str, str]:
+    return {
+        "OMNIUS_HOME": str(workspace_home.expanduser()),
+        "OMNIUS_SCHEDULED": "1",
+        "PATH": path_env or os.environ.get("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"),
+        "TZ": timezone,
+    }
 
 
 def build_omnius_run_command(python_executable: str | None = None) -> list[str]:
@@ -37,27 +52,77 @@ def default_backend_for_platform(platform: str | None = None) -> str:
     raise ValueError(f"Unsupported platform for scheduler install: {platform_name}")
 
 
-def render_cron_block(schedule: str, command: list[str]) -> str:
+def render_cron_block(
+    schedule: str,
+    command: list[str],
+    *,
+    workspace_home: Path | None = None,
+    timezone: str | None = None,
+    path_env: str | None = None,
+) -> str:
     _validate_cron_schedule(schedule)
     command_text = " ".join(shlex.quote(part) for part in command)
+    if workspace_home is None or timezone is None:
+        run_text = f"cd $HOME && {command_text} >> $HOME/.omnius/logs/omnius-cron.log 2>&1"
+    else:
+        home = workspace_home.expanduser()
+        scheduler_env = build_scheduler_environment(
+            workspace_home=home,
+            timezone=timezone,
+            path_env=path_env,
+        )
+        env_text = " ".join(f"{key}={shlex.quote(value)}" for key, value in sorted(scheduler_env.items()))
+        run_text = (
+            f"cd {shlex.quote(str(home))} && env {env_text} {command_text} "
+            f">> {shlex.quote(str(home / 'logs' / 'omnius-cron.log'))} 2>&1"
+        )
     return (
         f"{MANAGED_CRON_BEGIN}\n"
-        f"{schedule} cd $HOME && {command_text} >> $HOME/.omnius/logs/omnius-cron.log 2>&1\n"
+        f"{schedule} {run_text}\n"
         f"{MANAGED_CRON_END}\n"
     )
 
 
-def replace_managed_cron_block(existing: str, schedule: str, command: list[str]) -> str:
+def replace_managed_cron_block(
+    existing: str,
+    schedule: str,
+    command: list[str],
+    *,
+    workspace_home: Path | None = None,
+    timezone: str | None = None,
+    path_env: str | None = None,
+) -> str:
     preserved = _strip_managed_cron_block(existing).rstrip("\n")
-    block = render_cron_block(schedule, command).rstrip("\n")
+    block = render_cron_block(
+        schedule,
+        command,
+        workspace_home=workspace_home,
+        timezone=timezone,
+        path_env=path_env,
+    ).rstrip("\n")
     if not preserved:
         return block + "\n"
     return preserved + "\n" + block + "\n"
 
 
-def install_cron_schedule(*, schedule: str, command: list[str], env: dict[str, str] | None = None) -> str:
+def install_cron_schedule(
+    *,
+    schedule: str,
+    command: list[str],
+    workspace_home: Path | None = None,
+    timezone: str | None = None,
+    path_env: str | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
     existing = _read_crontab(env=env)
-    updated = replace_managed_cron_block(existing, schedule, command)
+    updated = replace_managed_cron_block(
+        existing,
+        schedule,
+        command,
+        workspace_home=workspace_home,
+        timezone=timezone,
+        path_env=path_env,
+    )
     _write_crontab(updated, env=env)
     return "user crontab"
 
@@ -73,17 +138,36 @@ def inspect_cron_schedule(
     *,
     schedule: str,
     command: list[str],
+    workspace_home: Path | None = None,
+    timezone: str | None = None,
+    path_env: str | None = None,
     env: dict[str, str] | None = None,
 ) -> SchedulerStatus:
     existing = _read_crontab(env=env)
-    expected_block = render_cron_block(schedule, command).strip()
+    expected_block = render_cron_block(
+        schedule,
+        command,
+        workspace_home=workspace_home,
+        timezone=timezone,
+        path_env=path_env,
+    ).strip()
     installed_block = _extract_managed_cron_block(existing)
+    scheduler_env = (
+        build_scheduler_environment(
+            workspace_home=workspace_home,
+            timezone=timezone,
+            path_env=path_env,
+        )
+        if workspace_home is not None and timezone is not None
+        else {}
+    )
     return SchedulerStatus(
         backend="cron",
         installed=installed_block is not None,
         matches_config=installed_block == expected_block,
         location="user crontab",
         command=command,
+        environment=scheduler_env,
     )
 
 
@@ -106,8 +190,14 @@ def render_launchd_plist(
     schedule: str,
     command: list[str],
     home: Path,
+    timezone: str | None = None,
     path_env: str | None = None,
 ) -> bytes:
+    scheduler_env = build_scheduler_environment(
+        workspace_home=home.expanduser(),
+        timezone=timezone or os.environ.get("TZ", "UTC"),
+        path_env=path_env,
+    )
     payload = {
         "Label": LAUNCHD_LABEL,
         "ProgramArguments": command,
@@ -115,9 +205,7 @@ def render_launchd_plist(
         "StartCalendarInterval": translate_cron_to_launchd(schedule),
         "StandardOutPath": str(home / "logs" / "omnius-launchd.log"),
         "StandardErrorPath": str(home / "logs" / "omnius-launchd.err"),
-        "EnvironmentVariables": {
-            "PATH": path_env or os.environ.get("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"),
-        },
+        "EnvironmentVariables": scheduler_env,
     }
     return plistlib.dumps(payload, sort_keys=False)
 
@@ -131,6 +219,8 @@ def install_launchd_schedule(
     workspace_home: Path,
     schedule: str,
     command: list[str],
+    timezone: str | None = None,
+    path_env: str | None = None,
     env: dict[str, str] | None = None,
 ) -> Path:
     plist_path = launchd_plist_path(workspace_home)
@@ -140,6 +230,8 @@ def install_launchd_schedule(
             schedule=schedule,
             command=command,
             home=workspace_home.expanduser(),
+            timezone=timezone,
+            path_env=path_env,
         )
     )
     domain_target = f"gui/{os.getuid()}"
@@ -180,8 +272,15 @@ def inspect_launchd_schedule(
     workspace_home: Path,
     schedule: str,
     command: list[str],
+    timezone: str | None = None,
+    path_env: str | None = None,
 ) -> SchedulerStatus:
     plist_path = launchd_plist_path(workspace_home)
+    scheduler_env = build_scheduler_environment(
+        workspace_home=workspace_home.expanduser(),
+        timezone=timezone or os.environ.get("TZ", "UTC"),
+        path_env=path_env,
+    )
     if not plist_path.exists():
         return SchedulerStatus(
             backend="launchd",
@@ -189,6 +288,7 @@ def inspect_launchd_schedule(
             matches_config=False,
             location=str(plist_path),
             command=command,
+            environment=scheduler_env,
         )
     payload = plistlib.loads(plist_path.read_bytes())
     expected_payload = plistlib.loads(
@@ -196,6 +296,8 @@ def inspect_launchd_schedule(
             schedule=schedule,
             command=command,
             home=workspace_home.expanduser(),
+            timezone=timezone,
+            path_env=path_env,
         )
     )
     return SchedulerStatus(
@@ -204,6 +306,7 @@ def inspect_launchd_schedule(
         matches_config=payload == expected_payload,
         location=str(plist_path),
         command=command,
+        environment=scheduler_env,
     )
 
 

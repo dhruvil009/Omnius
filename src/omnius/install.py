@@ -16,6 +16,7 @@ from omnius.config import (
     render_default_config,
 )
 from omnius.scheduler import (
+    build_scheduler_environment,
     build_omnius_run_command,
     default_backend_for_platform,
     inspect_cron_schedule,
@@ -75,11 +76,17 @@ def run_install(*, request: InstallRequest, workspace_home: Path, cwd: Path) -> 
     try:
         backend = _resolve_backend(request.backend)
         command = build_omnius_run_command()
+        scheduler_env = build_scheduler_environment(
+            workspace_home=workspace_home,
+            timezone=config.global_config.timezone,
+        )
         location = _install_backend(
             backend=backend,
             workspace_home=workspace_home,
             schedule=config.global_config.pipeline_cron,
             command=command,
+            timezone=config.global_config.timezone,
+            path_env=scheduler_env["PATH"],
         )
     except (RuntimeError, ValueError, subprocess.CalledProcessError) as exc:
         print(str(exc), file=sys.stderr)
@@ -89,6 +96,7 @@ def run_install(*, request: InstallRequest, workspace_home: Path, cwd: Path) -> 
         paths.state_dir / INSTALL_STATE_FILENAME,
         backend=backend,
         command=command,
+        environment=scheduler_env,
         location=location,
     )
     print(f"Installed Omnius scheduler via {backend}")
@@ -105,6 +113,10 @@ def run_doctor(*, request: LifecycleRequest, workspace_home: Path) -> int:
     install_state = _read_install_state(workspace_home / "state" / INSTALL_STATE_FILENAME)
     backend = request.backend or install_state.get("backend") or _resolve_backend(None)
     command = install_state.get("command") or build_omnius_run_command()
+    install_environment = install_state.get("environment")
+    path_env = None
+    if isinstance(install_environment, dict) and isinstance(install_environment.get("PATH"), str):
+        path_env = install_environment["PATH"]
 
     config = None
     if config_path.exists():
@@ -130,6 +142,8 @@ def run_doctor(*, request: LifecycleRequest, workspace_home: Path) -> int:
             workspace_home=workspace_home,
             schedule=config.global_config.pipeline_cron,
             command=list(command),
+            timezone=config.global_config.timezone,
+            path_env=path_env,
         )
     except (RuntimeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
@@ -144,6 +158,10 @@ def run_doctor(*, request: LifecycleRequest, workspace_home: Path) -> int:
     print(f"runner_default: {config.runner.default}")
     print(f"pipeline_cron: {config.global_config.pipeline_cron}")
     print(f"command: {' '.join(status.command)}")
+    for key in ("OMNIUS_HOME", "OMNIUS_SCHEDULED", "TZ", "PATH"):
+        value = status.environment.get(key)
+        if value is not None:
+            print(f"env.{key}: {value}")
     return 0
 
 
@@ -293,28 +311,60 @@ def _detect_git_branch(path: Path) -> str:
     return branch or "main"
 
 
-def _install_backend(*, backend: str, workspace_home: Path, schedule: str, command: list[str]) -> str:
+def _install_backend(
+    *,
+    backend: str,
+    workspace_home: Path,
+    schedule: str,
+    command: list[str],
+    timezone: str,
+    path_env: str | None,
+) -> str:
     if backend == "cron":
-        return install_cron_schedule(schedule=schedule, command=command)
+        return install_cron_schedule(
+            schedule=schedule,
+            command=command,
+            workspace_home=workspace_home,
+            timezone=timezone,
+            path_env=path_env,
+        )
     if backend == "launchd":
         return str(
             install_launchd_schedule(
                 workspace_home=workspace_home,
                 schedule=schedule,
                 command=command,
+                timezone=timezone,
+                path_env=path_env,
             )
         )
     raise ValueError(f"Unsupported scheduler backend: {backend}")
 
 
-def _inspect_backend(*, backend: str, workspace_home: Path, schedule: str, command: list[str]):
+def _inspect_backend(
+    *,
+    backend: str,
+    workspace_home: Path,
+    schedule: str,
+    command: list[str],
+    timezone: str,
+    path_env: str | None,
+):
     if backend == "cron":
-        return inspect_cron_schedule(schedule=schedule, command=command)
+        return inspect_cron_schedule(
+            schedule=schedule,
+            command=command,
+            workspace_home=workspace_home,
+            timezone=timezone,
+            path_env=path_env,
+        )
     if backend == "launchd":
         return inspect_launchd_schedule(
             workspace_home=workspace_home,
             schedule=schedule,
             command=command,
+            timezone=timezone,
+            path_env=path_env,
         )
     raise ValueError(f"Unsupported scheduler backend: {backend}")
 
@@ -327,10 +377,18 @@ def _uninstall_backend(*, backend: str, workspace_home: Path) -> str:
     raise ValueError(f"Unsupported scheduler backend: {backend}")
 
 
-def _write_install_state(path: Path, *, backend: str, command: list[str], location: str) -> None:
+def _write_install_state(
+    path: Path,
+    *,
+    backend: str,
+    command: list[str],
+    environment: dict[str, str],
+    location: str,
+) -> None:
     payload = {
         "backend": backend,
         "command": command,
+        "environment": environment,
         "location": location,
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
