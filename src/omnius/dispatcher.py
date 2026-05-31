@@ -613,6 +613,7 @@ def _classify_worker_result(*, task: DispatchTask, stdout_path: Path, branch: st
             "summary": summary,
             "pr_url": payload.get("pr_url"),
         }
+        _apply_report_fields(result, payload)
         _apply_usage_fields(result, usage)
         return result
 
@@ -625,6 +626,7 @@ def _classify_worker_result(*, task: DispatchTask, stdout_path: Path, branch: st
             "branch": payload.get("branch") or branch,
             "notes": payload.get("notes"),
         }
+        _apply_report_fields(result, payload)
         _apply_usage_fields(result, usage)
         return result
     if status == "BLOCKED":
@@ -732,6 +734,34 @@ def _apply_usage_fields(task_state: dict[str, object], usage: UsageStats | None)
     tokens = _usage_tokens_payload(usage)
     if tokens:
         task_state["tokens"] = tokens
+
+
+def _apply_report_fields(task_state: dict[str, object], payload: dict[str, object]) -> None:
+    for key in ("files_changed", "commands_run", "tests_run"):
+        value = payload.get(key)
+        if _is_string_list(value):
+            task_state[key] = value
+    tests_skipped = payload.get("tests_skipped")
+    if _is_tests_skipped_list(tests_skipped):
+        task_state["tests_skipped"] = tests_skipped
+    artifact_path = payload.get("artifact_path")
+    if isinstance(artifact_path, str) and artifact_path:
+        task_state["artifact_path"] = artifact_path
+
+
+def _is_string_list(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _is_tests_skipped_list(value: object) -> bool:
+    if not isinstance(value, list):
+        return False
+    for item in value:
+        if not isinstance(item, dict):
+            return False
+        if not isinstance(item.get("command"), str) or not isinstance(item.get("reason"), str):
+            return False
+    return True
 
 
 def _usage_tokens_payload(usage: UsageStats) -> dict[str, int]:

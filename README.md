@@ -21,6 +21,7 @@ Omnius is a runner-agnostic overnight orchestration tool for local development. 
 - archival only after workers produce a durable artifact, such as a committed task branch or PR URL
 - scheduler entries preserve `OMNIUS_HOME`, `TZ`, `OMNIUS_SCHEDULED`, and `PATH`
 - preflight rejects dirty repos, merge/rebase state, unwritable runtime paths, and low disk space
+- worker prompts require understand/implement/test/review/report phases and preserve report fields in status JSON
 
 ## Setup
 

@@ -17,10 +17,17 @@ Completion contract:
 - Do not emit `SUCCESS` for notes-only progress, uncommitted edits, or exploratory work. Emit `PARTIAL`, `BLOCKED`, or `FAILURE` instead.
 - Omnius verifies the branch before archiving the source task. A `SUCCESS` response without a durable artifact is downgraded to `NO_ARTIFACT`.
 
+Quality phases:
+- Understand: read the task, inspect the relevant repo context, and identify the smallest safe scope.
+- Implement: make only the changes required for this task in the current worktree.
+- Test: run focused structural or behavioral checks that fit the task and budget.
+- Review: inspect your own diff and remove accidental or unrelated changes.
+- Report: include changed files, commands run, tests run, skipped tests with reasons, and the artifact path or branch/PR identifier in your final JSON.
+
 --- Begin Task ---
 {task_body}
 --- End Task ---
 
 When finished, emit exactly one JSON object on stdout describing the final result.
-For `SUCCESS`, include `status`, `branch`, and `summary`.
-For `PARTIAL`, include `status`, `notes`, and `branch` if you changed or pushed work.
+For `SUCCESS`, include `status`, `branch`, `summary`, and any available report fields: `files_changed`, `commands_run`, `tests_run`, `tests_skipped`, and `artifact_path`.
+For `PARTIAL`, include `status`, `notes`, `branch` if you changed or pushed work, and any report fields that explain what was completed.

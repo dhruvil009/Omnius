@@ -172,7 +172,23 @@ def _render_task_rows(dispatch_log: dict[str, object]) -> list[dict[str, object]
             "branch": task_state.get("branch"),
             "duration_seconds": task_state.get("duration_seconds"),
         }
-        for key in ("summary", "notes", "reason", "error", "pr_url", "cost_usd", "turns", "tokens", "start", "end"):
+        for key in (
+            "summary",
+            "notes",
+            "reason",
+            "error",
+            "pr_url",
+            "artifact_path",
+            "files_changed",
+            "commands_run",
+            "tests_run",
+            "tests_skipped",
+            "cost_usd",
+            "turns",
+            "tokens",
+            "start",
+            "end",
+        ):
             value = task_state.get(key)
             if value is not None:
                 row[key] = value
