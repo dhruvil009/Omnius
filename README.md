@@ -19,6 +19,8 @@ Omnius is a runner-agnostic overnight orchestration tool for local development. 
 - runtime lock controls via `omnius stop` and `omnius recover`
 - per-task `agent` overrides for local tasks (`codex` or `claude`)
 - archival only after workers produce a durable artifact, such as a committed task branch or PR URL
+- scheduler entries preserve `OMNIUS_HOME`, `TZ`, `OMNIUS_SCHEDULED`, and `PATH`
+- preflight rejects dirty repos, merge/rebase state, unwritable runtime paths, and low disk space
 
 ## Setup
 

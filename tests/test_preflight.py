@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 from unittest.mock import patch
 
-from omnius.preflight import CommandCheck, PreflightResult, RepoCheck, run_preflight
+from omnius.preflight import CommandCheck, DiskSpaceCheck, FilesystemCheck, PreflightResult, RepoCheck, RepoStateCheck, run_preflight
 from omnius.runners import get_runner
 from omnius.runners.base import (
     DayPrepInvocation,
@@ -155,6 +155,113 @@ class PreflightTests(unittest.TestCase):
 
                     self.assertFalse(result.ok)
                     self.assertEqual(result.abort_reason, "repo")
+
+    def test_run_preflight_aborts_when_repo_has_dirty_or_in_progress_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+
+            dirty_result = run_preflight(
+                runner=HealthyRunner(),
+                repo_path=repo_path,
+                capability_policy={},
+                check_github=False,
+                git_check=CommandCheck(name="git", ok=True, detail="2.45.0"),
+                python_check=CommandCheck(name="python", ok=True, detail="3.11.9"),
+                repo_check=RepoCheck(path=repo_path, exists=True, is_git_repo=True),
+                repo_state_check=RepoStateCheck(clean=False, merge_in_progress=False, rebase_in_progress=False, detail="M README.md"),
+            )
+            merge_result = run_preflight(
+                runner=HealthyRunner(),
+                repo_path=repo_path,
+                capability_policy={},
+                check_github=False,
+                git_check=CommandCheck(name="git", ok=True, detail="2.45.0"),
+                python_check=CommandCheck(name="python", ok=True, detail="3.11.9"),
+                repo_check=RepoCheck(path=repo_path, exists=True, is_git_repo=True),
+                repo_state_check=RepoStateCheck(clean=True, merge_in_progress=True, rebase_in_progress=False, detail="merge in progress"),
+            )
+            rebase_result = run_preflight(
+                runner=HealthyRunner(),
+                repo_path=repo_path,
+                capability_policy={},
+                check_github=False,
+                git_check=CommandCheck(name="git", ok=True, detail="2.45.0"),
+                python_check=CommandCheck(name="python", ok=True, detail="3.11.9"),
+                repo_check=RepoCheck(path=repo_path, exists=True, is_git_repo=True),
+                repo_state_check=RepoStateCheck(clean=True, merge_in_progress=False, rebase_in_progress=True, detail="rebase in progress"),
+            )
+
+        self.assertEqual(dirty_result.abort_reason, "repo_state")
+        self.assertEqual(merge_result.abort_reason, "repo_state")
+        self.assertEqual(rebase_result.abort_reason, "repo_state")
+        self.assertFalse(dirty_result.payload["repo_state"]["clean"])
+        self.assertTrue(merge_result.payload["repo_state"]["merge_in_progress"])
+        self.assertTrue(rebase_result.payload["repo_state"]["rebase_in_progress"])
+
+    def test_run_preflight_default_repo_state_detects_dirty_git_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp) / "repo"
+            repo_path.mkdir()
+            subprocess.run(["git", "init", "-b", "main"], cwd=repo_path, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "config", "user.email", "omnius@example.com"], cwd=repo_path, check=True)
+            subprocess.run(["git", "config", "user.name", "Omnius Test"], cwd=repo_path, check=True)
+            (repo_path / "README.md").write_text("clean\n", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo_path, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=repo_path, check=True, capture_output=True, text=True)
+            (repo_path / "README.md").write_text("dirty\n", encoding="utf-8")
+
+            result = run_preflight(
+                runner=HealthyRunner(),
+                repo_path=repo_path,
+                capability_policy={},
+                check_github=False,
+                check_repo_state=True,
+                git_check=CommandCheck(name="git", ok=True, detail="2.45.0"),
+                python_check=CommandCheck(name="python", ok=True, detail="3.11.9"),
+            )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.abort_reason, "repo_state")
+        self.assertFalse(result.payload["repo_state"]["clean"])
+        self.assertIn("README.md", result.payload["repo_state"]["detail"])
+
+    def test_run_preflight_aborts_when_runtime_paths_are_not_writable_or_disk_is_low(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_path = Path(tmp)
+            repo_check = RepoCheck(path=repo_path, exists=True, is_git_repo=True)
+            repo_state = RepoStateCheck(clean=True, merge_in_progress=False, rebase_in_progress=False, detail="clean")
+
+            filesystem_result = run_preflight(
+                runner=HealthyRunner(),
+                repo_path=repo_path,
+                capability_policy={},
+                check_github=False,
+                git_check=CommandCheck(name="git", ok=True, detail="2.45.0"),
+                python_check=CommandCheck(name="python", ok=True, detail="3.11.9"),
+                repo_check=repo_check,
+                repo_state_check=repo_state,
+                filesystem_check=FilesystemCheck(ok=False, detail="journal not writable"),
+                disk_space_check=DiskSpaceCheck(path=repo_path, ok=True, free_bytes=10_000_000_000, min_free_bytes=536_870_912, detail="ok"),
+            )
+            disk_result = run_preflight(
+                runner=HealthyRunner(),
+                repo_path=repo_path,
+                capability_policy={},
+                check_github=False,
+                git_check=CommandCheck(name="git", ok=True, detail="2.45.0"),
+                python_check=CommandCheck(name="python", ok=True, detail="3.11.9"),
+                repo_check=repo_check,
+                repo_state_check=repo_state,
+                filesystem_check=FilesystemCheck(ok=True, detail="ok"),
+                disk_space_check=DiskSpaceCheck(path=repo_path, ok=False, free_bytes=1, min_free_bytes=536_870_912, detail="low disk"),
+            )
+
+        self.assertFalse(filesystem_result.ok)
+        self.assertEqual(filesystem_result.abort_reason, "filesystem")
+        self.assertEqual(filesystem_result.payload["filesystem"]["detail"], "journal not writable")
+        self.assertFalse(disk_result.ok)
+        self.assertEqual(disk_result.abort_reason, "disk")
+        self.assertEqual(disk_result.payload["disk"]["detail"], "low disk")
 
     def test_run_preflight_skips_github_checks_for_local_only_runs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

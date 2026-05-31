@@ -274,6 +274,11 @@ def run_command(_args: argparse.Namespace) -> int:
             repo_path=Path(primary_repo.path).expanduser(),
             capability_policy=_capability_policy(config),
             check_github=_github_checks_enabled(),
+            check_repo_state=True,
+            check_filesystem=True,
+            check_disk=True,
+            workspace_home=workspace_home,
+            journal_dir=journal_dir,
         )
         preflight_payload = {
             "ok": preflight.ok,
