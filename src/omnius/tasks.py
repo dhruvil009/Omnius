@@ -265,6 +265,8 @@ def add_local_task(
     task_type: str = "implementation",
     max_time_minutes: int | None = None,
 ) -> TaskCommandEntry:
+    _reject_control_characters("title", title)
+    _reject_control_characters("repo", repo_slug)
     title = title.strip()
     repo_slug = repo_slug.strip()
     if not title:
@@ -323,13 +325,22 @@ def complete_local_task(*, home: Path, task_id: str, run_date: str | None = None
     active_entry = show_task_entry(home, task_id)
     if active_entry.status != "active":
         raise ValueError(f"Task is not active: {task_id}")
+    completed_on = run_date or date.today().isoformat()
     archive_local_task_success(
         home=home,
         task_id=active_entry.task_id,
         filename=active_entry.filename,
-        run_date=run_date or date.today().isoformat(),
+        run_date=completed_on,
     )
-    return show_task_entry(home, task_id)
+    return TaskCommandEntry(
+        task_id=active_entry.task_id,
+        title=active_entry.title,
+        filename=active_entry.filename,
+        path=home / "tasks" / "completed" / active_entry.filename,
+        status="completed",
+        body=active_entry.body,
+        metadata={**active_entry.metadata, "completed_on": completed_on},
+    )
 
 
 def load_recurring_task_entries(home: Path) -> list[RecurringTaskEntry]:
@@ -499,6 +510,11 @@ def _matches_task_index_line(line: str, *, task_id: str, filename: str) -> bool:
     if match is None:
         return False
     return match.group("task_id") == task_id and match.group("filename") == filename
+
+
+def _reject_control_characters(field_name: str, value: str) -> None:
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError(f"Task {field_name} must not contain control characters")
 
 
 def _append_active_index_line(*, home: Path, line: str) -> None:

@@ -470,6 +470,34 @@ class TaskCommandHelperTests(unittest.TestCase):
         )
         self.assertIn("- O00006: Resolve CLI gap [file: O00006_resolve_cli_gap.md]", index_text)
 
+    def test_add_local_task_rejects_control_characters_in_title_and_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            bootstrap_workspace(home)
+
+            invalid_cases = (
+                {"title": "Bad\nTitle", "repo_slug": "omnius"},
+                {"title": "Bad\tTitle", "repo_slug": "omnius"},
+                {"title": "Valid title", "repo_slug": "omnius\nrepo"},
+                {"title": "Valid title", "repo_slug": "omnius\x1frepo"},
+            )
+
+            for invalid_case in invalid_cases:
+                with self.subTest(invalid_case=invalid_case):
+                    with self.assertRaisesRegex(ValueError, "control characters"):
+                        add_local_task(
+                            home=home,
+                            title=invalid_case["title"],
+                            repo_slug=invalid_case["repo_slug"],
+                            body="Body",
+                        )
+
+            index_text = (home / "tasks.md").read_text(encoding="utf-8")
+            task_files = sorted(path.name for path in (home / "tasks").glob("O*.md"))
+
+        self.assertEqual(task_files, [])
+        self.assertEqual(index_text, "## Format\n- <ID>: <Title> [file: <filename>.md]\n\n## Active\n\n## Completed\n")
+
     def test_complete_local_task_archives_active_task_by_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / ".omnius"
@@ -497,6 +525,34 @@ class TaskCommandHelperTests(unittest.TestCase):
         self.assertFalse(original_task_exists)
         self.assertTrue(archived_task_exists)
         self.assertIn("- 2026-05-31: O00001: Add sample [file: O00001_add_sample.md]", index_text)
+
+    def test_complete_local_task_returns_completed_entry_when_recurring_task_is_malformed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            bootstrap_workspace(home)
+            (home / "tasks.md").write_text(
+                "## Format\n"
+                "- <ID>: <Title> [file: <filename>.md]\n\n"
+                "## Active\n"
+                "- O00001: Add sample [file: O00001_add_sample.md]\n\n"
+                "## Completed\n",
+                encoding="utf-8",
+            )
+            (home / "tasks" / "O00001_add_sample.md").write_text(
+                "---\ntitle: Add sample\nrepo: example\n---\nTask body\n",
+                encoding="utf-8",
+            )
+            (home / "tasks" / "recurring" / "R00001_broken.md").write_text(
+                "---\ntitle: Broken recurring\nrepo: example\n---\nBroken body\n",
+                encoding="utf-8",
+            )
+
+            entry = complete_local_task(home=home, task_id="O00001", run_date="2026-05-31")
+            archived_task_exists = (home / "tasks" / "completed" / "O00001_add_sample.md").exists()
+
+        self.assertEqual(entry.status, "completed")
+        self.assertEqual(entry.task_id, "O00001")
+        self.assertTrue(archived_task_exists)
 
     def test_show_and_status_specific_list_helpers_cover_task_locations(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
