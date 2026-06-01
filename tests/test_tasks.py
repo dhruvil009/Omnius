@@ -5,10 +5,16 @@ from pathlib import Path
 
 from omnius.tasks import (
     RecurringTaskEntry,
+    add_local_task,
     archive_local_task_success,
+    complete_local_task,
+    list_completed_task_entries,
+    list_pending_task_entries,
+    list_recurring_command_entries,
     load_local_task_entries,
     load_recurring_task_entries,
     render_local_tasks_section,
+    show_task_entry,
 )
 from omnius.workspace import bootstrap_workspace
 
@@ -414,3 +420,133 @@ class RecurringTaskParsingTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, r"Task R00007.*max_time_minutes"):
                 load_recurring_task_entries(home)
+
+
+class TaskCommandHelperTests(unittest.TestCase):
+    def test_add_local_task_allocates_next_id_and_writes_frontmatter_and_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            bootstrap_workspace(home)
+            (home / "tasks.md").write_text(
+                "## Format\n"
+                "- <ID>: <Title> [file: <filename>.md]\n\n"
+                "## Active\n"
+                "- O00002: Existing task [file: O00002_existing_task.md]\n\n"
+                "## Completed\n"
+                "- 2026-05-30: O00005: Done task [file: O00005_done_task.md]\n",
+                encoding="utf-8",
+            )
+            (home / "tasks" / "O00002_existing_task.md").write_text(
+                "---\ntitle: Existing task\nrepo: omnius\n---\nExisting body\n",
+                encoding="utf-8",
+            )
+
+            entry = add_local_task(
+                home=home,
+                title="Resolve CLI gap",
+                repo_slug="omnius",
+                body="Implement task commands.",
+                agent="codex",
+                task_type="research",
+                max_time_minutes=45,
+            )
+
+            task_text = (home / "tasks" / "O00006_resolve_cli_gap.md").read_text(encoding="utf-8")
+            index_text = (home / "tasks.md").read_text(encoding="utf-8")
+
+        self.assertEqual(entry.task_id, "O00006")
+        self.assertEqual(entry.title, "Resolve CLI gap")
+        self.assertEqual(entry.status, "active")
+        self.assertEqual(
+            task_text,
+            "---\n"
+            "title: Resolve CLI gap\n"
+            "repo: omnius\n"
+            "agent: codex\n"
+            "type: research\n"
+            "max_time_minutes: 45\n"
+            "---\n"
+            "Implement task commands.\n",
+        )
+        self.assertIn("- O00006: Resolve CLI gap [file: O00006_resolve_cli_gap.md]", index_text)
+
+    def test_complete_local_task_archives_active_task_by_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            bootstrap_workspace(home)
+            (home / "tasks.md").write_text(
+                "## Format\n"
+                "- <ID>: <Title> [file: <filename>.md]\n\n"
+                "## Active\n"
+                "- O00001: Add sample [file: O00001_add_sample.md]\n\n"
+                "## Completed\n",
+                encoding="utf-8",
+            )
+            (home / "tasks" / "O00001_add_sample.md").write_text(
+                "---\ntitle: Add sample\nrepo: example\n---\nTask body\n",
+                encoding="utf-8",
+            )
+
+            entry = complete_local_task(home=home, task_id="O00001", run_date="2026-05-31")
+            index_text = (home / "tasks.md").read_text(encoding="utf-8")
+            original_task_exists = (home / "tasks" / "O00001_add_sample.md").exists()
+            archived_task_exists = (home / "tasks" / "completed" / "O00001_add_sample.md").exists()
+
+        self.assertEqual(entry.status, "completed")
+        self.assertEqual(entry.metadata["completed_on"], "2026-05-31")
+        self.assertFalse(original_task_exists)
+        self.assertTrue(archived_task_exists)
+        self.assertIn("- 2026-05-31: O00001: Add sample [file: O00001_add_sample.md]", index_text)
+
+    def test_show_and_status_specific_list_helpers_cover_task_locations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            bootstrap_workspace(home)
+            (home / "tasks.md").write_text(
+                "## Format\n"
+                "- <ID>: <Title> [file: <filename>.md]\n\n"
+                "## Active\n"
+                "- O00001: Active task [file: O00001_active_task.md]\n\n"
+                "## Completed\n"
+                "- 2026-05-30: O00003: Completed task [file: O00003_completed_task.md]\n",
+                encoding="utf-8",
+            )
+            (home / "tasks" / "O00001_active_task.md").write_text(
+                "---\ntitle: Active task\nrepo: omnius\n---\nActive body\n",
+                encoding="utf-8",
+            )
+            (home / "tasks" / "pending_approval" / "O00002_pending_task.md").write_text(
+                "---\ntitle: Pending task\nrepo: omnius\n---\nPending body\n",
+                encoding="utf-8",
+            )
+            (home / "tasks" / "completed" / "O00003_completed_task.md").write_text(
+                "---\ntitle: Completed task\nrepo: omnius\n---\nCompleted body\n",
+                encoding="utf-8",
+            )
+            (home / "tasks" / "recurring" / "R00001_recurring_task.md").write_text(
+                "---\n"
+                "title: Recurring task\n"
+                "repo: omnius\n"
+                "schedule: daily\n"
+                "type: design\n"
+                "---\n"
+                "Recurring body\n",
+                encoding="utf-8",
+            )
+
+            pending_entries = list_pending_task_entries(home)
+            recurring_entries = list_recurring_command_entries(home)
+            completed_entries = list_completed_task_entries(home)
+            active = show_task_entry(home, "O00001")
+            pending = show_task_entry(home, "O00002")
+            recurring = show_task_entry(home, "R00001")
+            completed = show_task_entry(home, "O00003")
+
+        self.assertEqual([entry.task_id for entry in pending_entries], ["O00002"])
+        self.assertEqual([entry.task_id for entry in recurring_entries], ["R00001"])
+        self.assertEqual([entry.task_id for entry in completed_entries], ["O00003"])
+        self.assertEqual(active.status, "active")
+        self.assertEqual(pending.status, "pending")
+        self.assertEqual(recurring.status, "recurring")
+        self.assertEqual(completed.status, "completed")
+        self.assertEqual(completed.metadata["completed_on"], "2026-05-30")

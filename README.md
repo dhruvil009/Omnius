@@ -49,6 +49,12 @@ omnius install
 omnius doctor
 omnius run
 omnius status --json
+omnius task list --json
+omnius task show O00001
+omnius task add --title "Task title" --repo repo-slug --body "Task body"
+omnius task complete O00001
+omnius task pending
+omnius task recurring
 omnius stop --dry-run
 omnius recover
 omnius uninstall

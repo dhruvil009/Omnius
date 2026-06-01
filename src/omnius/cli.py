@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from datetime import datetime
 import json
 import os
@@ -26,6 +27,16 @@ from omnius.preflight import run_preflight
 from omnius.runners import get_runner
 from omnius.runtime import PipelineAlreadyRunning, acquire_pipeline_lock, recover_pipeline_lock, stop_pipeline
 from omnius.status import load_status_snapshot, render_status_table
+from omnius.tasks import (
+    SUPPORTED_TASK_TYPES,
+    TaskCommandEntry,
+    add_local_task,
+    complete_local_task,
+    list_active_task_entries,
+    list_pending_task_entries,
+    list_recurring_command_entries,
+    show_task_entry,
+)
 from omnius.workspace import bootstrap_workspace
 
 _GITHUB_SOURCES_ENABLED = False
@@ -140,6 +151,70 @@ def build_parser() -> argparse.ArgumentParser:
     )
     recover_parser.set_defaults(handler=recover_command)
 
+    task_parser = subparsers.add_parser(
+        "task",
+        help="Manage Omnius local tasks",
+        description="Manage Omnius local tasks",
+    )
+    task_parser.set_defaults(handler=lambda _args, parser=task_parser: _print_parser_help(parser))
+    task_subparsers = task_parser.add_subparsers(dest="task_command")
+
+    task_list_parser = task_subparsers.add_parser(
+        "list",
+        help="List active local tasks",
+        description="List active local tasks",
+    )
+    _add_json_argument(task_list_parser)
+    task_list_parser.set_defaults(handler=task_list_command)
+
+    task_show_parser = task_subparsers.add_parser(
+        "show",
+        help="Show one task by ID",
+        description="Show one task by ID",
+    )
+    task_show_parser.add_argument("task_id", metavar="id")
+    _add_json_argument(task_show_parser)
+    task_show_parser.set_defaults(handler=task_show_command)
+
+    task_add_parser = task_subparsers.add_parser(
+        "add",
+        help="Add an active local task",
+        description="Add an active local task",
+    )
+    task_add_parser.add_argument("--title", required=True, help="Task title")
+    task_add_parser.add_argument("--repo", required=True, help="Configured repo slug")
+    task_add_parser.add_argument("--body", required=True, help="Task markdown body")
+    task_add_parser.add_argument("--agent", choices=("codex", "claude"), help="Optional task runner override")
+    task_add_parser.add_argument("--type", choices=SUPPORTED_TASK_TYPES, default="implementation", help="Task type")
+    task_add_parser.add_argument("--max-time", type=int, help="Maximum task runtime in minutes")
+    _add_json_argument(task_add_parser)
+    task_add_parser.set_defaults(handler=task_add_command)
+
+    task_complete_parser = task_subparsers.add_parser(
+        "complete",
+        help="Move an active local task to completed",
+        description="Move an active local task to completed",
+    )
+    task_complete_parser.add_argument("task_id", metavar="id")
+    _add_json_argument(task_complete_parser)
+    task_complete_parser.set_defaults(handler=task_complete_command)
+
+    task_pending_parser = task_subparsers.add_parser(
+        "pending",
+        help="List pending-approval tasks",
+        description="List pending-approval tasks",
+    )
+    _add_json_argument(task_pending_parser)
+    task_pending_parser.set_defaults(handler=task_pending_command)
+
+    task_recurring_parser = task_subparsers.add_parser(
+        "recurring",
+        help="List recurring tasks",
+        description="List recurring tasks",
+    )
+    _add_json_argument(task_recurring_parser)
+    task_recurring_parser.set_defaults(handler=task_recurring_command)
+
     uninstall_parser = subparsers.add_parser(
         "uninstall",
         help="Remove Omnius-managed scheduler setup",
@@ -152,6 +227,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     uninstall_parser.set_defaults(handler=uninstall_command)
     return parser
+
+
+def _print_parser_help(parser: argparse.ArgumentParser) -> int:
+    parser.print_help()
+    return 0
+
+
+def _add_json_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON",
+    )
 
 
 def install_command(args: argparse.Namespace) -> int:
@@ -482,11 +570,135 @@ def recover_command(_args: argparse.Namespace) -> int:
     return 0
 
 
+def task_list_command(args: argparse.Namespace) -> int:
+    return _emit_task_entries(
+        lambda home: list_active_task_entries(home),
+        json_output=bool(args.json),
+        empty_message="No active tasks.",
+    )
+
+
+def task_show_command(args: argparse.Namespace) -> int:
+    try:
+        entry = show_task_entry(_bootstrap_task_workspace(), args.task_id)
+    except (FileNotFoundError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(entry.as_payload(), indent=2, sort_keys=True))
+    else:
+        print(_render_task_detail(entry))
+    return 0
+
+
+def task_add_command(args: argparse.Namespace) -> int:
+    try:
+        entry = add_local_task(
+            home=_bootstrap_task_workspace(),
+            title=args.title,
+            repo_slug=args.repo,
+            body=args.body,
+            agent=args.agent,
+            task_type=args.type,
+            max_time_minutes=args.max_time,
+        )
+    except (FileExistsError, FileNotFoundError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(entry.as_payload(), indent=2, sort_keys=True))
+    else:
+        print(f"Added {entry.task_id}: {entry.title} [file: {entry.filename}]")
+    return 0
+
+
+def task_complete_command(args: argparse.Namespace) -> int:
+    try:
+        entry = complete_local_task(home=_bootstrap_task_workspace(), task_id=args.task_id)
+    except (FileNotFoundError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(entry.as_payload(), indent=2, sort_keys=True))
+    else:
+        print(f"Completed {entry.task_id}: {entry.title} [file: {entry.filename}]")
+    return 0
+
+
+def task_pending_command(args: argparse.Namespace) -> int:
+    return _emit_task_entries(
+        lambda home: list_pending_task_entries(home),
+        json_output=bool(args.json),
+        empty_message="No pending tasks.",
+    )
+
+
+def task_recurring_command(args: argparse.Namespace) -> int:
+    return _emit_task_entries(
+        lambda home: list_recurring_command_entries(home),
+        json_output=bool(args.json),
+        empty_message="No recurring tasks.",
+    )
+
+
 def uninstall_command(args: argparse.Namespace) -> int:
     return run_uninstall(
         request=LifecycleRequest(backend=args.backend),
         workspace_home=_resolve_workspace_home(),
     )
+
+
+def _bootstrap_task_workspace() -> Path:
+    return bootstrap_workspace(_resolve_workspace_home()).home
+
+
+def _emit_task_entries(
+    loader: Callable[[Path], list[TaskCommandEntry]],
+    *,
+    json_output: bool,
+    empty_message: str,
+) -> int:
+    try:
+        entries = loader(_bootstrap_task_workspace())
+    except (FileNotFoundError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    if json_output:
+        print(json.dumps([entry.as_payload() for entry in entries], indent=2, sort_keys=True))
+    elif entries:
+        print("\n".join(_render_task_summary_line(entry) for entry in entries))
+    else:
+        print(empty_message)
+    return 0
+
+
+def _render_task_summary_line(entry: TaskCommandEntry) -> str:
+    return f"{entry.task_id}  {entry.title}  [{entry.status}]  {entry.filename}"
+
+
+def _render_task_detail(entry: TaskCommandEntry) -> str:
+    lines = [
+        f"Task {entry.task_id} ({entry.status})",
+        f"Title: {entry.title}",
+        f"File: {entry.path}",
+    ]
+    for key, label in (
+        ("repo", "Repo"),
+        ("agent", "Agent"),
+        ("type", "Type"),
+        ("max_time_minutes", "Max Time"),
+        ("schedule", "Schedule"),
+        ("completed_on", "Completed On"),
+    ):
+        value = entry.metadata.get(key)
+        if value is not None:
+            lines.append(f"{label}: {value}")
+    lines.extend(["", "Body:", entry.body.rstrip()])
+    return "\n".join(lines)
 
 
 def _allocate_journal_dir(journal_root: Path, run_started_at: datetime) -> Path:

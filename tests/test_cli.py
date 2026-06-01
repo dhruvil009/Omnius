@@ -2,7 +2,9 @@ import contextlib
 from datetime import datetime, timezone
 import importlib.util
 import io
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -20,8 +22,10 @@ HAS_SETUPTOOLS = importlib.util.find_spec("setuptools") is not None
 
 
 class CliSmokeTests(unittest.TestCase):
-    def run_cli(self, *args: str) -> subprocess.CompletedProcess[str]:
+    def run_cli(self, *args: str, env_overrides: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
+        if env_overrides is not None:
+            env.update(env_overrides)
         existing_pythonpath = env.get("PYTHONPATH")
         env["PYTHONPATH"] = str(SRC) if not existing_pythonpath else f"{SRC}{os.pathsep}{existing_pythonpath}"
         return subprocess.run(
@@ -44,6 +48,7 @@ class CliSmokeTests(unittest.TestCase):
         self.assertIn("status", stdout.getvalue())
         self.assertIn("stop", stdout.getvalue())
         self.assertIn("recover", stdout.getvalue())
+        self.assertIn("task", stdout.getvalue())
 
     @unittest.skipIf(sys.version_info < (3, 11), "package requires Python >= 3.11")
     @unittest.skipUnless(HAS_SETUPTOOLS, "setuptools is required for console-script install coverage")
@@ -110,6 +115,7 @@ class CliSmokeTests(unittest.TestCase):
         self.assertIn("status", result.stdout)
         self.assertIn("stop", result.stdout)
         self.assertIn("recover", result.stdout)
+        self.assertIn("task", result.stdout)
 
     def test_install_help_mentions_scheduler_setup(self) -> None:
         result = self.run_cli("install", "--help")
@@ -160,6 +166,121 @@ class CliSmokeTests(unittest.TestCase):
         result = self.run_cli("recover", "--help")
         self.assertEqual(result.returncode, 0)
         self.assertIn("Recover from a stale Omnius runtime lock", result.stdout)
+
+    def test_task_help_lists_core_task_subcommands(self) -> None:
+        result = self.run_cli("task", "--help")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("list", result.stdout)
+        self.assertIn("show", result.stdout)
+        self.assertIn("add", result.stdout)
+        self.assertIn("complete", result.stdout)
+        self.assertIn("pending", result.stdout)
+        self.assertIn("recurring", result.stdout)
+
+    def test_task_add_writes_task_and_task_list_json_reads_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            env = {"OMNIUS_HOME": str(home)}
+
+            add_result = self.run_cli(
+                "task",
+                "add",
+                "--title",
+                "Add CLI commands",
+                "--repo",
+                "omnius",
+                "--body",
+                "Implement core task command coverage.",
+                "--agent",
+                "codex",
+                "--type",
+                "implementation",
+                "--max-time",
+                "60",
+                "--json",
+                env_overrides=env,
+            )
+            self.assertEqual(add_result.returncode, 0, add_result.stderr)
+            list_result = self.run_cli("task", "list", "--json", env_overrides=env)
+            self.assertEqual(list_result.returncode, 0, list_result.stderr)
+            task_file_text = (home / "tasks" / "O00001_add_cli_commands.md").read_text(encoding="utf-8")
+
+        added = json.loads(add_result.stdout)
+        self.assertEqual(added["id"], "O00001")
+        self.assertEqual(added["status"], "active")
+        self.assertEqual(added["metadata"]["agent"], "codex")
+        self.assertEqual(added["metadata"]["type"], "implementation")
+        self.assertEqual(added["metadata"]["max_time_minutes"], "60")
+        listed = json.loads(list_result.stdout)
+        self.assertEqual([task["id"] for task in listed], ["O00001"])
+        self.assertEqual(listed[0]["title"], "Add CLI commands")
+        self.assertIn("max_time_minutes: 60", task_file_text)
+
+    def test_task_show_and_complete_support_human_and_json_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            env = {"OMNIUS_HOME": str(home)}
+            add_result = self.run_cli(
+                "task",
+                "add",
+                "--title",
+                "Finish archive path",
+                "--repo",
+                "omnius",
+                "--body",
+                "Move this task to completed.",
+                env_overrides=env,
+            )
+            self.assertEqual(add_result.returncode, 0, add_result.stderr)
+            show_result = self.run_cli("task", "show", "O00001", env_overrides=env)
+            self.assertEqual(show_result.returncode, 0, show_result.stderr)
+            complete_result = self.run_cli("task", "complete", "O00001", "--json", env_overrides=env)
+            self.assertEqual(complete_result.returncode, 0, complete_result.stderr)
+            index_text = (home / "tasks.md").read_text(encoding="utf-8")
+            original_task_exists = (home / "tasks" / "O00001_finish_archive_path.md").exists()
+            archived_task_exists = (home / "tasks" / "completed" / "O00001_finish_archive_path.md").exists()
+
+        self.assertIn("Task O00001 (active)", show_result.stdout)
+        self.assertIn("Move this task to completed.", show_result.stdout)
+        completed = json.loads(complete_result.stdout)
+        self.assertEqual(completed["status"], "completed")
+        self.assertFalse(original_task_exists)
+        self.assertTrue(archived_task_exists)
+        self.assertRegex(
+            index_text,
+            re.compile(r"- \d{4}-\d{2}-\d{2}: O00001: Finish archive path \[file: O00001_finish_archive_path.md\]"),
+        )
+
+    def test_task_pending_and_recurring_json_list_non_active_queues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            pending_dir = home / "tasks" / "pending_approval"
+            recurring_dir = home / "tasks" / "recurring"
+            pending_dir.mkdir(parents=True, exist_ok=True)
+            recurring_dir.mkdir(parents=True, exist_ok=True)
+            (home / "tasks.md").write_text(
+                "## Format\n"
+                "- <ID>: <Title> [file: <filename>.md]\n\n"
+                "## Active\n\n"
+                "## Completed\n",
+                encoding="utf-8",
+            )
+            (pending_dir / "O00002_pending_review.md").write_text(
+                "---\ntitle: Pending review\nrepo: omnius\n---\nNeeds approval\n",
+                encoding="utf-8",
+            )
+            (recurring_dir / "R00001_daily_cleanup.md").write_text(
+                "---\ntitle: Daily cleanup\nrepo: omnius\nschedule: daily\n---\nClean up\n",
+                encoding="utf-8",
+            )
+
+            pending_result = self.run_cli("task", "pending", "--json", env_overrides={"OMNIUS_HOME": str(home)})
+            recurring_result = self.run_cli("task", "recurring", "--json", env_overrides={"OMNIUS_HOME": str(home)})
+
+        self.assertEqual(pending_result.returncode, 0, pending_result.stderr)
+        self.assertEqual(recurring_result.returncode, 0, recurring_result.stderr)
+        self.assertEqual(json.loads(pending_result.stdout)[0]["status"], "pending")
+        self.assertEqual(json.loads(recurring_result.stdout)[0]["status"], "recurring")
 
     def test_allocate_journal_dir_appends_suffix_when_base_path_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
