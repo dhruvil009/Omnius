@@ -14,6 +14,18 @@ from omnius.costs import SessionCostRecord, write_session_cost_record
 from omnius.dayprep import run_dayprep
 from omnius.dispatcher import dispatch_manifest, initialize_dispatch_log, update_dispatch_log
 from omnius.install import InstallRequest, LifecycleRequest, run_doctor, run_install, run_uninstall
+from omnius.logs import (
+    collect_cron_logs,
+    collect_error_summary,
+    collect_worker_logs,
+    load_latest_dispatch_log,
+    render_cron_logs,
+    render_dispatch_log,
+    render_error_summary,
+    render_logs_summary,
+    render_worker_logs,
+    summarize_logs,
+)
 from omnius.planner import (
     build_manifest_tasks,
     build_planner_prompt,
@@ -126,6 +138,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit machine-readable status JSON",
     )
     status_parser.set_defaults(handler=status_command)
+
+    logs_parser = subparsers.add_parser(
+        "logs",
+        help="Show Omnius logs",
+        description="Show Omnius logs",
+    )
+    _add_json_argument(logs_parser)
+    logs_parser.set_defaults(handler=logs_command)
+    logs_subparsers = logs_parser.add_subparsers(dest="logs_command")
+
+    logs_cron_parser = logs_subparsers.add_parser(
+        "cron",
+        help="Show scheduler cron and launchd logs",
+        description="Show scheduler cron and launchd logs",
+    )
+    _add_json_argument(logs_cron_parser)
+    logs_cron_parser.set_defaults(handler=logs_cron_command)
+
+    logs_dispatch_parser = logs_subparsers.add_parser(
+        "dispatch",
+        help="Show the latest dispatch log",
+        description="Show the latest dispatch log",
+    )
+    _add_json_argument(logs_dispatch_parser)
+    logs_dispatch_parser.set_defaults(handler=logs_dispatch_command)
+
+    logs_worker_parser = logs_subparsers.add_parser(
+        "worker",
+        help="Show worker stdout/stderr artifacts for the latest run",
+        description="Show worker stdout/stderr artifacts for the latest run",
+    )
+    logs_worker_parser.add_argument("task_id")
+    _add_json_argument(logs_worker_parser)
+    logs_worker_parser.set_defaults(handler=logs_worker_command)
+
+    logs_errors_parser = logs_subparsers.add_parser(
+        "errors",
+        help="Show latest task errors and scheduler stderr availability",
+        description="Show latest task errors and scheduler stderr availability",
+    )
+    _add_json_argument(logs_errors_parser)
+    logs_errors_parser.set_defaults(handler=logs_errors_command)
 
     stop_parser = subparsers.add_parser(
         "stop",
@@ -550,6 +604,34 @@ def status_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def logs_command(args: argparse.Namespace) -> int:
+    payload = summarize_logs(_bootstrap_logs_workspace())
+    return _emit_logs_payload(payload, json_output=bool(args.json), renderer=render_logs_summary)
+
+
+def logs_cron_command(args: argparse.Namespace) -> int:
+    payload = collect_cron_logs(_bootstrap_logs_workspace())
+    return _emit_logs_payload(payload, json_output=bool(args.json), renderer=render_cron_logs)
+
+
+def logs_dispatch_command(args: argparse.Namespace) -> int:
+    payload = load_latest_dispatch_log(_bootstrap_logs_workspace())
+    if args.json and payload.get("ok"):
+        print(json.dumps(payload["dispatch_log"], indent=2, sort_keys=True))
+        return 0
+    return _emit_logs_payload(payload, json_output=bool(args.json), renderer=render_dispatch_log)
+
+
+def logs_worker_command(args: argparse.Namespace) -> int:
+    payload = collect_worker_logs(_bootstrap_logs_workspace(), args.task_id)
+    return _emit_logs_payload(payload, json_output=bool(args.json), renderer=render_worker_logs)
+
+
+def logs_errors_command(args: argparse.Namespace) -> int:
+    payload = collect_error_summary(_bootstrap_logs_workspace())
+    return _emit_logs_payload(payload, json_output=bool(args.json), renderer=render_error_summary)
+
+
 def stop_command(args: argparse.Namespace) -> int:
     result = stop_pipeline(
         state_dir=_resolve_workspace_home() / "state",
@@ -653,6 +735,27 @@ def uninstall_command(args: argparse.Namespace) -> int:
 
 def _bootstrap_task_workspace() -> Path:
     return bootstrap_workspace(_resolve_workspace_home()).home
+
+
+def _bootstrap_logs_workspace() -> Path:
+    return bootstrap_workspace(_resolve_workspace_home()).home
+
+
+def _emit_logs_payload(
+    payload: dict[str, object],
+    *,
+    json_output: bool,
+    renderer: Callable[[dict[str, object]], str],
+) -> int:
+    if json_output:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        rendered = renderer(payload)
+        if payload.get("ok"):
+            print(rendered)
+        else:
+            print(rendered, file=sys.stderr)
+    return 0 if payload.get("ok") else 1
 
 
 def _emit_task_entries(

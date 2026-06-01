@@ -46,6 +46,7 @@ class CliSmokeTests(unittest.TestCase):
         self.assertIn("uninstall", stdout.getvalue())
         self.assertIn("run", stdout.getvalue())
         self.assertIn("status", stdout.getvalue())
+        self.assertIn("logs", stdout.getvalue())
         self.assertIn("stop", stdout.getvalue())
         self.assertIn("recover", stdout.getvalue())
         self.assertIn("task", stdout.getvalue())
@@ -113,6 +114,7 @@ class CliSmokeTests(unittest.TestCase):
         self.assertIn("uninstall", result.stdout)
         self.assertIn("run", result.stdout)
         self.assertIn("status", result.stdout)
+        self.assertIn("logs", result.stdout)
         self.assertIn("stop", result.stdout)
         self.assertIn("recover", result.stdout)
         self.assertIn("task", result.stdout)
@@ -154,6 +156,60 @@ class CliSmokeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("Show the latest Omnius run summary", result.stdout)
         self.assertIn("--json", result.stdout)
+
+    def test_logs_help_lists_log_subcommands(self) -> None:
+        result = self.run_cli("logs", "--help")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Show Omnius logs", result.stdout)
+        self.assertIn("cron", result.stdout)
+        self.assertIn("dispatch", result.stdout)
+        self.assertIn("worker", result.stdout)
+        self.assertIn("errors", result.stdout)
+        self.assertIn("--json", result.stdout)
+
+    def test_logs_json_summarizes_no_runs_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            result = self.run_cli("logs", "--json", env_overrides={"OMNIUS_HOME": str(home)})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["ok"])
+        self.assertIsNone(payload["latest_journal"])
+        self.assertFalse(payload["scheduler_logs"]["cron"]["exists"])
+
+    def test_logs_dispatch_json_reports_malformed_dispatch_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            journal_dir = home / "journal" / "2026-05-07" / "210000"
+            journal_dir.mkdir(parents=True)
+            (journal_dir / "dispatch_log.json").write_text("{broken", encoding="utf-8")
+
+            result = self.run_cli("logs", "dispatch", "--json", env_overrides={"OMNIUS_HOME": str(home)})
+
+        self.assertEqual(result.returncode, 1)
+        payload = json.loads(result.stdout)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"]["code"], "malformed_dispatch_log")
+
+    def test_logs_worker_json_includes_stdout_and_stderr_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            journal_dir = home / "journal" / "2026-05-07" / "210000"
+            journal_dir.mkdir(parents=True)
+            (journal_dir / "dispatch_log.json").write_text(
+                json.dumps({"pipeline": {"started_at": "2026-05-07T21:00:00-07:00"}, "tasks": {}}),
+                encoding="utf-8",
+            )
+            (journal_dir / "O00001_stdout.json").write_text('{"status":"FAILURE","error":"boom"}\n', encoding="utf-8")
+            (journal_dir / "O00001_stderr.log").write_text("stderr details\n", encoding="utf-8")
+
+            result = self.run_cli("logs", "worker", "O00001", "--json", env_overrides={"OMNIUS_HOME": str(home)})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["stdout"]["json"]["error"], "boom")
+        self.assertEqual(payload["stderr"]["content"], "stderr details\n")
 
     def test_stop_help_mentions_runtime_lock_controls(self) -> None:
         result = self.run_cli("stop", "--help")
