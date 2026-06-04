@@ -616,8 +616,11 @@ def status_command(args: argparse.Namespace) -> int:
         if os.environ.get("OMNIUS_DISABLE") == "1" or os.environ.get("OMNIUS_WORKER") == "1":
             return 0
         try:
-            snapshot = load_status_snapshot(workspace_home)
-        except FileNotFoundError:
+            snapshot = load_status_snapshot(workspace_home, run_date=args.date)
+        except FileNotFoundError as exc:
+            if args.date:
+                print(str(exc), file=sys.stderr)
+                return 1
             return 0
         except (ValueError, json.JSONDecodeError) as exc:
             print(str(exc), file=sys.stderr)

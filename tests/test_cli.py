@@ -260,6 +260,44 @@ class CliSmokeTests(unittest.TestCase):
         self.assertEqual(second.stdout, "")
         self.assertIn(str(journal_dir), cache["seen_journals"])
 
+    def test_status_session_start_date_selects_and_caches_latest_run_for_date(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            self._seed_status_run(home, "2026-05-06", "060000", "old selected date run")
+            selected = self._seed_status_run(home, "2026-05-06", "210000", "selected date run")
+            later_global = self._seed_status_run(home, "2026-05-07", "060000", "later global run")
+            env = {"OMNIUS_HOME": str(home)}
+
+            first = self.run_cli("status", "--session-start", "--date", "2026-05-06", env_overrides=env)
+            second = self.run_cli("status", "--session-start", "--date", "2026-05-06", env_overrides=env)
+            cache = json.loads((home / "state" / "session_start_seen.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertIn("Run: 2026-05-06 210000", first.stdout)
+        self.assertIn("Summary: selected date run", first.stdout)
+        self.assertNotIn("later global run", first.stdout)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(second.stdout, "")
+        self.assertIn(str(selected), cache["seen_journals"])
+        self.assertNotIn(str(later_global), cache["seen_journals"])
+
+    def test_status_session_start_date_missing_run_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            self._seed_status_run(home, "2026-05-06", "210000", "existing run")
+
+            result = self.run_cli(
+                "status",
+                "--session-start",
+                "--date",
+                "2026-05-07",
+                env_overrides={"OMNIUS_HOME": str(home)},
+            )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("No Omnius runs found for 2026-05-07", result.stderr)
+
     def test_status_session_start_json_suppresses_repeat(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / ".omnius"
