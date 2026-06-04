@@ -69,6 +69,18 @@ omnius install-launchd
 
 The default workspace is `~/.omnius`. Override it with `OMNIUS_HOME=/path/to/workspace`.
 
+## Runner Invocation Safety
+
+Fresh configs default to safe planner/day-prep placeholders so a scheduled run cannot unexpectedly spend provider credits:
+
+```toml
+[runner]
+default = "codex"
+planner_dayprep_mode = "placeholder"
+```
+
+Set `planner_dayprep_mode = "real"` only when you want the configured runner CLI to compile planner and morning-brief outputs. Worker tasks still use the selected task agent and existing per-task `agent = "codex"` or `agent = "claude"` overrides.
+
 ## Development
 
 The package targets Python 3.11+ and uses the standard library `unittest` suite.

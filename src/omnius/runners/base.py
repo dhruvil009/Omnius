@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 from pathlib import Path
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
@@ -16,6 +18,16 @@ class RunnerHealth:
 class RunnerCapability:
     name: str
     available: bool
+    detail: str
+
+
+@dataclass(frozen=True)
+class RunnerVersionProbe:
+    runner_name: str
+    executable: str
+    command: list[str]
+    available: bool
+    version: str | None
     detail: str
 
 
@@ -37,6 +49,8 @@ class PlannerInvocation:
     prompt: str
     plan_text: str
     usage: UsageStats | None = None
+    command: list[str] | None = None
+    returncode: int | None = None
 
 
 @dataclass(frozen=True)
@@ -45,6 +59,8 @@ class DayPrepInvocation:
     task_id: str
     brief_markdown: str
     usage: UsageStats | None = None
+    command: list[str] | None = None
+    returncode: int | None = None
 
 
 @dataclass(frozen=True)
@@ -77,6 +93,16 @@ class RunnerAdapter(ABC):
     def name(self) -> str:
         raise NotImplementedError
 
+    def version_probe(self) -> RunnerVersionProbe:
+        return RunnerVersionProbe(
+            runner_name=self.name,
+            executable=self.name,
+            command=[self.name, "--version"],
+            available=False,
+            version=None,
+            detail=f"{self.name} runner does not implement version probing",
+        )
+
     @abstractmethod
     def health_check(self) -> RunnerHealth:
         raise NotImplementedError
@@ -108,6 +134,101 @@ def load_worker_result_schema_text() -> str:
 
 def load_worker_result_schema_path() -> Path:
     return Path(__file__).resolve().parent.parent / "resources" / "schemas" / "worker_result.schema.json"
+
+
+def probe_runner_version(*, runner_name: str, executable: str, timeout_seconds: float = 5.0) -> RunnerVersionProbe:
+    resolved_executable = shutil.which(executable)
+    if resolved_executable is None:
+        return RunnerVersionProbe(
+            runner_name=runner_name,
+            executable=executable,
+            command=[executable, "--version"],
+            available=False,
+            version=None,
+            detail=f"{runner_name} executable not found: {executable}",
+        )
+    command = [resolved_executable, "--version"]
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except OSError as exc:
+        return RunnerVersionProbe(
+            runner_name=runner_name,
+            executable=resolved_executable,
+            command=command,
+            available=False,
+            version=None,
+            detail=f"{runner_name} version probe failed: {exc}",
+        )
+    except subprocess.TimeoutExpired:
+        return RunnerVersionProbe(
+            runner_name=runner_name,
+            executable=resolved_executable,
+            command=command,
+            available=False,
+            version=None,
+            detail=f"{runner_name} version probe timed out",
+        )
+    version = _first_nonempty_line(completed.stdout) or _first_nonempty_line(completed.stderr)
+    if completed.returncode != 0:
+        detail = version or f"{runner_name} version probe exited {completed.returncode}"
+        return RunnerVersionProbe(
+            runner_name=runner_name,
+            executable=resolved_executable,
+            command=command,
+            available=False,
+            version=version,
+            detail=detail,
+        )
+    return RunnerVersionProbe(
+        runner_name=runner_name,
+        executable=resolved_executable,
+        command=command,
+        available=True,
+        version=version or "<unknown version>",
+        detail=version or f"{runner_name} executable is available",
+    )
+
+
+def run_runner_text_command(command: list[str], *, timeout_seconds: float = 600.0) -> tuple[str, int]:
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or f"exit code {completed.returncode}"
+        raise RuntimeError(f"Runner command failed ({completed.returncode}): {detail}")
+    return completed.stdout, completed.returncode
+
+
+def normalize_runner_text_output(output: str, *, preferred_keys: tuple[str, ...] = ("text", "message", "content")) -> str:
+    stripped = output.strip()
+    if not stripped:
+        return ""
+
+    full_json = _try_load_json(stripped)
+    if full_json is not None:
+        extracted = _extract_text_from_payload(full_json, preferred_keys, fallback_json=True)
+        if extracted:
+            return extracted.strip()
+
+    for line in reversed(stripped.splitlines()):
+        line_payload = _try_load_json(line.strip())
+        if line_payload is None:
+            continue
+        extracted = _extract_text_from_payload(line_payload, preferred_keys, fallback_json=False)
+        if extracted:
+            return extracted.strip()
+
+    return stripped
 
 
 def parse_usage_stats(payload: object) -> UsageStats | None:
@@ -169,3 +290,49 @@ def _coerce_optional_string(value: object, field_name: str) -> str | None:
     if not isinstance(value, str):
         raise ValueError(f"Usage field '{field_name}' must be a string")
     return value
+
+
+def _first_nonempty_line(text: str) -> str | None:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return None
+
+
+def _try_load_json(text: str) -> object | None:
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def _extract_text_from_payload(
+    payload: object,
+    preferred_keys: tuple[str, ...],
+    *,
+    fallback_json: bool,
+) -> str | None:
+    if isinstance(payload, str):
+        return payload
+    if isinstance(payload, list):
+        parts: list[str] = []
+        for item in payload:
+            extracted = _extract_text_from_payload(item, preferred_keys, fallback_json=fallback_json)
+            if extracted is not None and extracted.strip():
+                parts.append(extracted)
+        return "\n".join(parts) if parts else None
+    if isinstance(payload, dict):
+        for key in preferred_keys:
+            if key in payload:
+                extracted = _extract_text_from_payload(payload[key], preferred_keys, fallback_json=fallback_json)
+                if extracted is not None:
+                    return extracted
+        for key in ("text", "message", "response", "result", "output", "content"):
+            if key in payload:
+                extracted = _extract_text_from_payload(payload[key], preferred_keys, fallback_json=fallback_json)
+                if extracted is not None:
+                    return extracted
+        if fallback_json:
+            return json.dumps(payload, indent=2, sort_keys=True)
+    return None

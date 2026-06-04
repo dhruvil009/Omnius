@@ -12,11 +12,13 @@ class ConfigError(ValueError):
 
 SUPPORTED_RUNNERS = frozenset({"codex", "claude"})
 CAPABILITY_POLICY_MODES = frozenset({"auto", "force", "disable"})
+PLANNER_DAYPREP_MODES = frozenset({"placeholder", "real"})
 DEFAULT_PIPELINE_CRON = "0 21 * * 0-4"
 DEFAULT_PIPELINE_BUDGET_MINUTES = 540
 DEFAULT_TASK_BUDGET_MINUTES = 120
 DEFAULT_MAX_CONSECUTIVE_FAILURES = 3
 DEFAULT_NOTIFICATION_BACKEND = "none"
+DEFAULT_PLANNER_DAYPREP_MODE = "placeholder"
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,7 @@ class GlobalConfig:
 @dataclass(frozen=True)
 class RunnerSelection:
     default: str
+    planner_dayprep_mode: str = DEFAULT_PLANNER_DAYPREP_MODE
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,7 @@ def _require_str_list(value: object) -> None:
 def _validate_config_types(
     global_config: GlobalConfig,
     runner_default: object,
+    planner_dayprep_mode: object,
     capabilities: CapabilityConfig,
     repos: list[RepoConfig],
 ) -> None:
@@ -95,6 +99,7 @@ def _validate_config_types(
     _require_int(global_config.max_consecutive_failures)
     _require_str(global_config.notification_backend)
     _require_str(runner_default)
+    _require_str(planner_dayprep_mode)
     _require_str(capabilities.brainstorm)
     _require_str(capabilities.review_diff)
     _require_str(capabilities.autonomous_testing)
@@ -108,7 +113,12 @@ def _validate_config_types(
         _require_str_list(repo.labels)
 
 
-def _validate_config_values(global_config: GlobalConfig, capabilities: CapabilityConfig) -> None:
+def _validate_config_values(
+    global_config: GlobalConfig,
+    capabilities: CapabilityConfig,
+    *,
+    planner_dayprep_mode: str,
+) -> None:
     if len(global_config.pipeline_cron.split()) != 5:
         raise ConfigError("Invalid config value for pipeline_cron: must be a 5-field cron expression")
 
@@ -128,6 +138,12 @@ def _validate_config_values(global_config: GlobalConfig, capabilities: Capabilit
                 f"must be one of {', '.join(sorted(CAPABILITY_POLICY_MODES))}"
             )
 
+    if planner_dayprep_mode not in PLANNER_DAYPREP_MODES:
+        raise ConfigError(
+            "Invalid config value for runner.planner_dayprep_mode: "
+            f"must be one of {', '.join(sorted(PLANNER_DAYPREP_MODES))}"
+        )
+
 
 def load_config(path: Path) -> OmniusConfig:
     try:
@@ -136,22 +152,24 @@ def load_config(path: Path) -> OmniusConfig:
         raise ConfigError(f"Failed to load config from {path}") from exc
 
     try:
-        runner_default = data["runner"]["default"]
+        runner_section = data["runner"]
+        runner_default = runner_section["default"]
+        planner_dayprep_mode = runner_section.get("planner_dayprep_mode", DEFAULT_PLANNER_DAYPREP_MODE)
         global_config = GlobalConfig(**data["global"])
         capabilities = CapabilityConfig(**data["capabilities"])
         repos = [RepoConfig(**repo) for repo in data.get("repos", [])]
-        _validate_config_types(global_config, runner_default, capabilities, repos)
+        _validate_config_types(global_config, runner_default, planner_dayprep_mode, capabilities, repos)
     except (KeyError, TypeError) as exc:
         raise ConfigError(f"Invalid config structure in {path}") from exc
 
-    _validate_config_values(global_config, capabilities)
+    _validate_config_values(global_config, capabilities, planner_dayprep_mode=planner_dayprep_mode)
 
     if runner_default not in SUPPORTED_RUNNERS:
         raise ConfigError(f"Unsupported runner: {runner_default}")
 
     return OmniusConfig(
         global_config=global_config,
-        runner=RunnerSelection(default=runner_default),
+        runner=RunnerSelection(default=runner_default, planner_dayprep_mode=planner_dayprep_mode),
         capabilities=capabilities,
         repos=repos,
     )
@@ -177,6 +195,7 @@ def render_default_config(
 
         [runner]
         default = "{runner_default}"
+        planner_dayprep_mode = "{DEFAULT_PLANNER_DAYPREP_MODE}"
 
         [capabilities]
         brainstorm = "auto"

@@ -3,7 +3,7 @@ import textwrap
 import unittest
 from pathlib import Path
 
-from omnius.config import ConfigError, load_config
+from omnius.config import ConfigError, load_config, render_default_config
 
 
 class ConfigTests(unittest.TestCase):
@@ -46,6 +46,7 @@ class ConfigTests(unittest.TestCase):
             config = load_config(home / "omnius.toml")
 
             self.assertEqual(config.runner.default, "codex")
+            self.assertEqual(config.runner.planner_dayprep_mode, "placeholder")
             self.assertEqual(config.repos[0].slug, "example")
 
     def test_load_config_rejects_unknown_runner(self) -> None:
@@ -107,6 +108,35 @@ class ConfigTests(unittest.TestCase):
             config = load_config(home / "omnius.toml")
 
             self.assertEqual(config.runner.default, "claude")
+            self.assertEqual(config.runner.planner_dayprep_mode, "placeholder")
+
+    def test_load_config_accepts_real_planner_dayprep_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / "omnius.toml").write_text(self._valid_config_text(planner_dayprep_mode="real"))
+
+            config = load_config(home / "omnius.toml")
+
+        self.assertEqual(config.runner.planner_dayprep_mode, "real")
+
+    def test_load_config_rejects_invalid_planner_dayprep_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            (home / "omnius.toml").write_text(self._valid_config_text(planner_dayprep_mode="eager"))
+
+            with self.assertRaisesRegex(ConfigError, "planner_dayprep_mode"):
+                load_config(home / "omnius.toml")
+
+    def test_render_default_config_uses_safe_placeholder_invocation_mode(self) -> None:
+        rendered = render_default_config(
+            timezone="America/Los_Angeles",
+            runner_default="codex",
+            repo_slug="example",
+            repo_path="/tmp/example",
+            repo_branch="main",
+        )
+
+        self.assertIn('planner_dayprep_mode = "placeholder"', rendered)
 
     def test_load_config_wraps_missing_required_sections(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -225,6 +255,7 @@ class ConfigTests(unittest.TestCase):
             "review_diff": "auto",
             "autonomous_testing": "auto",
             "second_opinion": "auto",
+            "planner_dayprep_mode": "placeholder",
         }
         values.update(overrides)
         return textwrap.dedent(
@@ -239,6 +270,7 @@ class ConfigTests(unittest.TestCase):
 
             [runner]
             default = "codex"
+            planner_dayprep_mode = "{values["planner_dayprep_mode"]}"
 
             [capabilities]
             brainstorm = "{values["brainstorm"]}"

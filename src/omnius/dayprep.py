@@ -25,6 +25,8 @@ class DayPrepResult:
     latest_brief_path: Path
     used_fallback: bool
     warning_banner: str | None = None
+    command: list[str] | None = None
+    returncode: int | None = None
 
 
 def run_dayprep(
@@ -42,6 +44,8 @@ def run_dayprep(
         brief_text = invocation.brief_markdown
         brief_path = journal_dir / "daily_brief.md"
         warning_banner = None
+        command = invocation.command
+        returncode = invocation.returncode
         if invocation.usage is not None:
             write_session_cost_record(
                 costs_dir=workspace_home / "costs",
@@ -62,6 +66,8 @@ def run_dayprep(
         )
         brief_path = journal_dir / "daily_brief_fallback.md"
         warning_banner = "Day prep failed; minimal brief only."
+        command = None
+        returncode = None
     brief_path.write_text(brief_text, encoding="utf-8")
     latest_brief_path.write_text(brief_text, encoding="utf-8")
     return DayPrepResult(
@@ -69,6 +75,8 @@ def run_dayprep(
         latest_brief_path=latest_brief_path,
         used_fallback=warning_banner is not None,
         warning_banner=warning_banner,
+        command=command,
+        returncode=returncode,
     )
 
 

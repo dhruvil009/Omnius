@@ -186,7 +186,7 @@ class RunPipelineTests(unittest.TestCase):
             fake_claude = self._write_fake_claude_binary(tmp_path)
             failing_codex = self._write_executable(
                 tmp_path / "bin" / "failing-codex",
-                "#!/bin/sh\nexit 99\n",
+                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"codex 1.2.3\"; exit 0; fi\nexit 99\n",
             )
             runner_log = tmp_path / "runner.log"
 
@@ -324,6 +324,36 @@ class RunPipelineTests(unittest.TestCase):
             self.assertEqual(dispatch_log["pipeline"]["status"], "completed")
             self.assertFalse(dispatch_log["planner"]["used_runner_output"])
             self.assertEqual(dispatch_log["planner"]["fallback_reason"], "invalid_json")
+
+    def test_run_command_persists_real_planner_dayprep_command_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            home = tmp_path / ".omnius"
+            repo = self._create_repo_with_origin(tmp_path)
+
+            self._write_config(home=home, repo=repo, planner_dayprep_mode="real")
+            self._write_local_task(home)
+            fake_bin, fake_codex = self._write_fake_run_binaries(tmp_path)
+
+            result = self._run_cli(
+                home=home,
+                fake_bin=fake_bin,
+                extra_env={"OMNIUS_CODEX_BIN": str(fake_codex)},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            journals = sorted((home / "journal").rglob("dispatch_log.json"))
+            self.assertEqual(len(journals), 1)
+            dispatch_log = json.loads(journals[0].read_text(encoding="utf-8"))
+
+            self.assertEqual(dispatch_log["planner"]["returncode"], 0)
+            self.assertEqual(dispatch_log["planner"]["command"][0], str(fake_codex))
+            self.assertEqual(dispatch_log["planner"]["command"][-1], "<prompt>")
+            self.assertNotIn("RUN_DATE", " ".join(dispatch_log["planner"]["command"]))
+            self.assertEqual(dispatch_log["dayprep"]["returncode"], 0)
+            self.assertEqual(dispatch_log["dayprep"]["command"][0], str(fake_codex))
+            self.assertEqual(dispatch_log["dayprep"]["command"][-1], "<prompt>")
+            self.assertNotIn("DISPATCH_LOG_JSON", " ".join(dispatch_log["dayprep"]["command"]))
 
     def test_run_command_surfaces_quarantined_recurring_state_in_prompt_and_dispatch_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -593,7 +623,14 @@ class RunPipelineTests(unittest.TestCase):
             env=env,
         )
 
-    def _write_config(self, *, home: Path, repo: Optional[Path], max_consecutive_failures: int = 3) -> None:
+    def _write_config(
+        self,
+        *,
+        home: Path,
+        repo: Optional[Path],
+        max_consecutive_failures: int = 3,
+        planner_dayprep_mode: str = "placeholder",
+    ) -> None:
         home.mkdir(parents=True, exist_ok=True)
         repos_block = ""
         if repo is not None:
@@ -621,6 +658,7 @@ class RunPipelineTests(unittest.TestCase):
 
                 [runner]
                 default = "codex"
+                planner_dayprep_mode = "{planner_dayprep_mode}"
 
                 [runners.codex]
                 enabled = true
@@ -720,12 +758,17 @@ class RunPipelineTests(unittest.TestCase):
                 """\
                 #!/bin/sh
                 set -eu
+                if [ "$1" = "--version" ]; then
+                    echo "codex 1.2.3"
+                    exit 0
+                fi
                 [ "$1" = "exec" ] || {
                     echo "expected exec mode" >&2
                     exit 10
                 }
                 shift
                 worktree=""
+                sandbox=""
                 saw_output_schema="0"
                 prompt=""
                 while [ "$#" -gt 0 ]; do
@@ -736,7 +779,8 @@ class RunPipelineTests(unittest.TestCase):
                             ;;
                         --sandbox)
                             shift
-                            [ "$1" = "workspace-write" ] || {
+                            sandbox="$1"
+                            [ "$sandbox" = "workspace-write" ] || [ "$sandbox" = "read-only" ] || {
                                 echo "unexpected sandbox: $1" >&2
                                 exit 11
                             }
@@ -762,6 +806,14 @@ class RunPipelineTests(unittest.TestCase):
                     esac
                     shift
                 done
+                if [ "$sandbox" = "read-only" ]; then
+                    [ -n "$prompt" ] || {
+                        echo "missing prompt payload" >&2
+                        exit 17
+                    }
+                    printf '{"text":"Fake real runner output"}\n'
+                    exit 0
+                fi
                 [ "$saw_output_schema" = "1" ] || {
                     echo "missing --output-schema" >&2
                     exit 14
@@ -891,6 +943,10 @@ class RunPipelineTests(unittest.TestCase):
                 """\
                 #!/bin/sh
                 set -eu
+                if [ "$1" = "--version" ]; then
+                    echo "claude 4.0.0"
+                    exit 0
+                fi
                 if [ "${OMNIUS_FAKE_RUNNER_LOG:-}" != "" ]; then
                     printf 'claude\n' >> "$OMNIUS_FAKE_RUNNER_LOG"
                 fi

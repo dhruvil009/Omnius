@@ -382,7 +382,7 @@ def run_command(_args: argparse.Namespace) -> int:
     except ConfigError as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    runner = get_runner(config.runner.default)
+    runner = get_runner(config.runner.default, planner_dayprep_mode=config.runner.planner_dayprep_mode)
 
     run_started_at = datetime.now().astimezone()
     run_date = run_started_at.strftime("%Y-%m-%d")
@@ -526,6 +526,8 @@ def run_command(_args: argparse.Namespace) -> int:
                 "planner": {
                     "task_id": planner_invocation.task_id,
                     "runner_name": planner_invocation.runner_name,
+                    "command": planner_invocation.command,
+                    "returncode": planner_invocation.returncode,
                     "used_runner_output": planner_selection.used_runner_output,
                     "fallback_reason": planner_selection.fallback_reason,
                     "recurring_state": {
@@ -577,6 +579,8 @@ def run_command(_args: argparse.Namespace) -> int:
                     "latest_brief_path": str(dayprep_result.latest_brief_path),
                     "used_fallback": dayprep_result.used_fallback,
                     "warning_banner": dayprep_result.warning_banner,
+                    "command": dayprep_result.command,
+                    "returncode": dayprep_result.returncode,
                 }
             },
         )

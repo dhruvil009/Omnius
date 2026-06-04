@@ -61,21 +61,60 @@ class UnhealthyExplodingRunner(UnhealthyRunner):
 
 
 class PreflightTests(unittest.TestCase):
-    def test_stub_runners_return_deterministic_placeholder_data(self) -> None:
-        codex = get_runner("codex")
-        claude = get_runner("claude")
+    def test_runners_return_safe_placeholder_data_with_fake_binaries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            fake_codex = self._write_fake_runner(tmp_path, "fake-codex", version="codex 1.2.3")
+            fake_claude = self._write_fake_runner(tmp_path, "fake-claude", version="claude 4.0.0")
+            with patch.dict(
+                "os.environ",
+                {
+                    "OMNIUS_CODEX_BIN": str(fake_codex),
+                    "OMNIUS_CLAUDE_BIN": str(fake_claude),
+                },
+                clear=False,
+            ):
+                codex = get_runner("codex")
+                claude = get_runner("claude")
 
-        codex_plan = codex.invoke_planner(task_id="task-001", prompt="Plan task")
-        claude_plan = claude.invoke_planner(task_id="task-002", prompt="Plan task")
+                codex_plan = codex.invoke_planner(task_id="task-001", prompt="Plan task")
+                claude_plan = claude.invoke_planner(task_id="task-002", prompt="Plan task")
+                codex_health = codex.health_check()
+                claude_health = claude.health_check()
+                codex_brainstorm = codex.discover_capabilities()["brainstorm"]
+                claude_review = claude.discover_capabilities()["review_diff"]
 
-        self.assertTrue(codex.health_check().ok)
-        self.assertTrue(claude.health_check().ok)
-        self.assertEqual(codex.discover_capabilities()["brainstorm"].detail, "milestone-1 stub")
-        self.assertEqual(claude.discover_capabilities()["review_diff"].detail, "milestone-1 stub")
+        self.assertTrue(codex_health.ok)
+        self.assertTrue(claude_health.ok)
+        self.assertTrue(codex_brainstorm.available)
+        self.assertIn("codex 1.2.3", codex_brainstorm.detail)
+        self.assertTrue(claude_review.available)
+        self.assertIn("claude 4.0.0", claude_review.detail)
         self.assertEqual(codex_plan.runner_name, "codex")
         self.assertEqual(claude_plan.runner_name, "claude")
         self.assertIn("placeholder", codex_plan.plan_text)
         self.assertIn("placeholder", claude_plan.plan_text)
+        self.assertIsNone(codex_plan.command)
+        self.assertIsNone(claude_plan.command)
+
+    def _write_fake_runner(self, directory: Path, name: str, *, version: str) -> Path:
+        path = directory / name
+        path.write_text(
+            "\n".join(
+                [
+                    "#!/bin/sh",
+                    'if [ "$1" = "--version" ]; then',
+                    f"  printf '%s\\n' '{version}'",
+                    "  exit 0",
+                    "fi",
+                    "exit 99",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        path.chmod(0o755)
+        return path
 
     def test_run_preflight_returns_combined_payload_and_capability_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
