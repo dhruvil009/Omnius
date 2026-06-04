@@ -58,9 +58,14 @@ def load_latest_dispatch_log(home: Path) -> dict[str, object]:
             **_error_payload("missing_dispatch_log", f"Missing dispatch log: {path}"),
         }
 
-    text = path.read_text(encoding="utf-8")
     try:
+        text = path.read_text(encoding="utf-8")
         payload = json.loads(text)
+    except UnicodeDecodeError as exc:
+        return {
+            **base,
+            **_error_payload("malformed_dispatch_log", f"Malformed dispatch log at {path}: {exc.reason}"),
+        }
     except json.JSONDecodeError as exc:
         return {
             **base,
@@ -239,7 +244,7 @@ def _journal_sort_timestamp(journal_dir: Path, dispatch_path: Path) -> datetime:
     if dispatch_path.exists():
         try:
             payload = json.loads(dispatch_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
+        except (UnicodeDecodeError, json.JSONDecodeError):
             payload = None
         if isinstance(payload, dict):
             pipeline = payload.get("pipeline")

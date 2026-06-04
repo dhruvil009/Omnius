@@ -192,6 +192,21 @@ class CliSmokeTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["error"]["code"], "malformed_dispatch_log")
 
+    def test_logs_dispatch_json_reports_invalid_byte_dispatch_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            journal_dir = home / "journal" / "2026-05-07" / "210000"
+            journal_dir.mkdir(parents=True)
+            (journal_dir / "dispatch_log.json").write_bytes(b'{"pipeline":{},"bad":"\xff"}')
+
+            result = self.run_cli("logs", "dispatch", "--json", env_overrides={"OMNIUS_HOME": str(home)})
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stderr, "")
+        payload = json.loads(result.stdout)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error"]["code"], "malformed_dispatch_log")
+
     def test_logs_worker_json_includes_stdout_and_stderr_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / ".omnius"

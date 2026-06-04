@@ -43,6 +43,26 @@ class LogsTests(unittest.TestCase):
         self.assertEqual(result["journal_dir"], str(journal_dir))
         self.assertEqual(result["path"], str(journal_dir / "dispatch_log.json"))
 
+    def test_load_latest_dispatch_log_returns_error_envelope_for_invalid_bytes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            older_dir = home / "journal" / "2026-05-07" / "210000"
+            latest_dir = home / "journal" / "2026-05-07" / "220000"
+            older_dir.mkdir(parents=True)
+            latest_dir.mkdir(parents=True)
+            (older_dir / "dispatch_log.json").write_text(
+                json.dumps({"pipeline": {"started_at": "2026-05-07T20:00:00Z"}, "tasks": {}}),
+                encoding="utf-8",
+            )
+            (latest_dir / "dispatch_log.json").write_bytes(b'{"pipeline":{"started_at":"2026-05-07T22:00:00-07:00"},"bad":"\xff"}')
+
+            result = load_latest_dispatch_log(home)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "malformed_dispatch_log")
+        self.assertEqual(result["journal_dir"], str(latest_dir))
+        self.assertEqual(result["path"], str(latest_dir / "dispatch_log.json"))
+
     def test_collect_worker_logs_returns_stdout_and_stderr_artifacts_for_latest_run(self) -> None:
         with TemporaryDirectory() as tmp:
             home = Path(tmp) / ".omnius"
