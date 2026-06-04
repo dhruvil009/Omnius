@@ -14,6 +14,7 @@ from pathlib import Path
 
 from omnius import cli
 from omnius.cli import main
+from omnius.dispatcher import initialize_dispatch_log, update_dispatch_log
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -156,6 +157,147 @@ class CliSmokeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("Show the latest Omnius run summary", result.stdout)
         self.assertIn("--json", result.stdout)
+        self.assertIn("--date", result.stdout)
+        self.assertIn("--brief", result.stdout)
+        self.assertIn("--attention", result.stdout)
+        self.assertIn("--session-start", result.stdout)
+
+    def test_status_date_selects_latest_run_for_date(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            self._seed_status_run(home, "2026-05-06", "060000", "old run")
+            self._seed_status_run(home, "2026-05-06", "210000", "new run")
+            self._seed_status_run(home, "2026-05-07", "060000", "wrong date")
+
+            result = self.run_cli("status", "--date", "2026-05-06", env_overrides={"OMNIUS_HOME": str(home)})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Run: 2026-05-06 210000", result.stdout)
+        self.assertIn("Summary: new run", result.stdout)
+        self.assertNotIn("wrong date", result.stdout)
+
+    def test_status_date_missing_run_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            self._seed_status_run(home, "2026-05-06", "060000", "old run")
+
+            result = self.run_cli("status", "--date", "2026-05-07", env_overrides={"OMNIUS_HOME": str(home)})
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("No Omnius runs found for 2026-05-07", result.stderr)
+
+    def test_status_brief_outputs_markdown_and_json_envelope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            journal_dir = self._seed_status_run(home, "2026-05-06", "210000", "run")
+            brief_path = journal_dir / "daily_brief.md"
+            brief_path.write_text("# Morning Brief\n\nShip it.\n", encoding="utf-8")
+
+            human = self.run_cli("status", "--brief", env_overrides={"OMNIUS_HOME": str(home)})
+            machine = self.run_cli("status", "--brief", "--json", env_overrides={"OMNIUS_HOME": str(home)})
+
+        self.assertEqual(human.returncode, 0, human.stderr)
+        self.assertEqual(human.stdout, "# Morning Brief\n\nShip it.\n")
+        self.assertEqual(machine.returncode, 0, machine.stderr)
+        payload = json.loads(machine.stdout)
+        self.assertEqual(payload["brief"]["path"], str(brief_path))
+        self.assertTrue(payload["brief"]["exists"])
+        self.assertEqual(payload["brief"]["content"], "# Morning Brief\n\nShip it.\n")
+        self.assertEqual(payload["summary"], "run")
+
+    def test_status_brief_missing_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            self._seed_status_run(home, "2026-05-06", "210000", "run")
+
+            result = self.run_cli("status", "--brief", env_overrides={"OMNIUS_HOME": str(home)})
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("No daily brief found", result.stderr)
+
+    def test_status_attention_outputs_only_attention_items_and_json_array(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            self._seed_status_run(home, "2026-05-06", "210000", "run", attention=True)
+
+            human = self.run_cli("status", "--attention", env_overrides={"OMNIUS_HOME": str(home)})
+            machine = self.run_cli("status", "--attention", "--json", env_overrides={"OMNIUS_HOME": str(home)})
+
+        self.assertEqual(human.returncode, 0, human.stderr)
+        self.assertTrue(human.stdout.startswith("Attention:\n"))
+        self.assertIn("O00039 Investigate flaky test [PARTIAL via claude]: needs follow-up", human.stdout)
+        self.assertNotIn("Pipeline:", human.stdout)
+        attention = json.loads(machine.stdout)
+        self.assertEqual(attention[0]["id"], "O00039")
+
+    def test_status_attention_none_outputs_none_and_empty_json_array(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            self._seed_status_run(home, "2026-05-06", "210000", "run")
+
+            human = self.run_cli("status", "--attention", env_overrides={"OMNIUS_HOME": str(home)})
+            machine = self.run_cli("status", "--attention", "--json", env_overrides={"OMNIUS_HOME": str(home)})
+
+        self.assertEqual(human.returncode, 0, human.stderr)
+        self.assertEqual(human.stdout, "Attention: none\n")
+        self.assertEqual(json.loads(machine.stdout), [])
+
+    def test_status_session_start_suppresses_repeat_and_records_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            journal_dir = self._seed_status_run(home, "2026-05-06", "210000", "run")
+            env = {"OMNIUS_HOME": str(home)}
+
+            first = self.run_cli("status", "--session-start", env_overrides=env)
+            second = self.run_cli("status", "--session-start", env_overrides=env)
+            cache = json.loads((home / "state" / "session_start_seen.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertIn("Run: 2026-05-06 210000", first.stdout)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(second.stdout, "")
+        self.assertIn(str(journal_dir), cache["seen_journals"])
+
+    def test_status_session_start_json_suppresses_repeat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            self._seed_status_run(home, "2026-05-06", "210000", "run")
+            env = {"OMNIUS_HOME": str(home)}
+
+            first = self.run_cli("status", "--session-start", "--json", env_overrides=env)
+            second = self.run_cli("status", "--session-start", "--json", env_overrides=env)
+
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(json.loads(first.stdout)["summary"], "run")
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(second.stdout, "")
+
+    def test_status_session_start_env_suppressors_do_not_mutate_cache(self) -> None:
+        for env_name in ("OMNIUS_DISABLE", "OMNIUS_WORKER"):
+            with self.subTest(env_name=env_name), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp) / ".omnius"
+                self._seed_status_run(home, "2026-05-06", "210000", "run")
+
+                result = self.run_cli(
+                    "status",
+                    "--session-start",
+                    env_overrides={"OMNIUS_HOME": str(home), env_name: "1"},
+                )
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertFalse((home / "state" / "session_start_seen.json").exists())
+
+    def test_status_session_start_no_runs_is_quiet(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+
+            result = self.run_cli("status", "--session-start", env_overrides={"OMNIUS_HOME": str(home)})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
 
     def test_logs_help_lists_log_subcommands(self) -> None:
         result = self.run_cli("logs", "--help")
@@ -383,3 +525,65 @@ class CliSmokeTests(unittest.TestCase):
 
         self.assertEqual(first.name, "210000")
         self.assertEqual(second.name, "210000-01")
+
+    def _seed_status_run(
+        self,
+        home: Path,
+        run_date: str,
+        run_time: str,
+        summary: str,
+        *,
+        attention: bool = False,
+    ) -> Path:
+        journal_dir = home / "journal" / run_date / run_time
+        journal_dir.mkdir(parents=True, exist_ok=True)
+        dispatch_log_path = journal_dir / "dispatch_log.json"
+        initialize_dispatch_log(
+            dispatch_log_path,
+            pipeline_id=f"pipeline-{run_date}-{run_time}",
+            runner_name="codex",
+            repo_slug="example",
+            branch="main",
+        )
+        update_dispatch_log(
+            dispatch_log_path,
+            patch={
+                "pipeline": {
+                    "status": "completed",
+                    "run_date": run_date,
+                    "journal_dir": str(journal_dir),
+                    "started_at": f"{run_date}T{run_time[:2]}:{run_time[2:4]}:{run_time[4:]}-07:00",
+                    "ended_at": f"{run_date}T{run_time[:2]}:{run_time[2:4]}:{run_time[4:]}-07:00",
+                },
+                "tasks": {
+                    "O00001": {
+                        "id": "O00001",
+                        "title": "Ship feature",
+                        "repo_slug": "example",
+                        "status": "SUCCESS",
+                        "agent": "codex",
+                    }
+                },
+            },
+        )
+        if attention:
+            update_dispatch_log(
+                dispatch_log_path,
+                patch={
+                    "tasks": {
+                        "O00039": {
+                            "id": "O00039",
+                            "title": "Investigate flaky test",
+                            "repo_slug": "example",
+                            "status": "PARTIAL",
+                            "agent": "claude",
+                            "notes": "needs follow-up",
+                        }
+                    }
+                },
+            )
+        (journal_dir / "manifest.json").write_text(
+            json.dumps({"summary": summary, "tasks": [], "skipped": []}, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        return journal_dir

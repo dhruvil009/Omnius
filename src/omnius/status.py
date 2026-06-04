@@ -24,8 +24,8 @@ class StatusSnapshot:
     payload: dict[str, object]
 
 
-def load_status_snapshot(home: Path) -> StatusSnapshot:
-    journal_dir = resolve_latest_journal(home)
+def load_status_snapshot(home: Path, *, run_date: str | None = None) -> StatusSnapshot:
+    journal_dir = resolve_latest_journal(home, run_date=run_date)
     payload = build_status_payload(journal_dir)
     pipeline = payload.get("pipeline", {})
     if not isinstance(pipeline, dict):
@@ -38,10 +38,11 @@ def load_status_snapshot(home: Path) -> StatusSnapshot:
     )
 
 
-def resolve_latest_journal(home: Path) -> Path:
+def resolve_latest_journal(home: Path, *, run_date: str | None = None) -> Path:
     journal_root = home / "journal"
+    search_root = journal_root / run_date if run_date is not None else journal_root
     candidates: list[tuple[datetime, str, Path]] = []
-    for dispatch_log_path in journal_root.rglob("dispatch_log.json"):
+    for dispatch_log_path in search_root.rglob("dispatch_log.json"):
         payload = _read_optional_json(dispatch_log_path)
         if not isinstance(payload, dict):
             continue
@@ -53,6 +54,8 @@ def resolve_latest_journal(home: Path) -> Path:
         candidates.append((started_at, relative_key, dispatch_log_path.parent))
 
     if not candidates:
+        if run_date is not None:
+            raise FileNotFoundError(f"No Omnius runs found for {run_date} under {journal_root / run_date}")
         raise FileNotFoundError(f"No Omnius runs found under {journal_root}")
     return max(candidates, key=lambda item: (item[0], item[1]))[2]
 
@@ -78,6 +81,7 @@ def build_status_payload(journal_dir: Path) -> dict[str, object]:
         "attention": _collect_attention(task_rows),
         "skipped": _collect_skipped(journal_dir=journal_dir, dispatch_log=dispatch_log, manifest=manifest),
     }
+    payload["next_command"] = _next_command(payload)
     return payload
 
 
@@ -131,7 +135,44 @@ def render_status_table(payload: dict[str, object]) -> str:
         f"budget_exhausted={skipped.get('budget_exhausted', 0)} "
         f"circuit_breaker_skipped={skipped.get('circuit_breaker_skipped', 0)}"
     )
+    lines.append(f"Next: {payload.get('next_command') or _next_command(payload)}")
     return "\n".join(lines)
+
+
+def find_brief(payload: dict[str, object]) -> dict[str, object]:
+    journal_dir_value = payload.get("journal_dir")
+    if not isinstance(journal_dir_value, str) or not journal_dir_value:
+        return {"path": None, "exists": False, "content": None}
+    journal_dir = Path(journal_dir_value)
+
+    candidates: list[Path] = []
+    dayprep = payload.get("dayprep")
+    if isinstance(dayprep, dict):
+        brief_path = dayprep.get("brief_path")
+        if isinstance(brief_path, str) and brief_path:
+            candidates.append(Path(brief_path))
+    candidates.extend([journal_dir / "daily_brief.md", journal_dir / "daily_brief_fallback.md"])
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate.exists() and candidate.is_file():
+            return {
+                "path": str(candidate),
+                "exists": True,
+                "content": candidate.read_text(encoding="utf-8"),
+            }
+
+    return {"path": None, "exists": False, "content": None}
+
+
+def render_attention(payload: dict[str, object]) -> str:
+    attention = payload.get("attention", [])
+    if not isinstance(attention, list) or not attention:
+        return "Attention: none"
+    return "\n".join(["Attention:", *_render_attention_lines(attention)])
 
 
 def _read_required_json(path: Path) -> dict[str, object]:
@@ -256,6 +297,16 @@ def _render_run_label(payload: dict[str, object]) -> str:
         return str(run_date)
     path = Path(journal_dir)
     return f"{run_date} {path.name}"
+
+
+def _next_command(payload: dict[str, object]) -> str:
+    attention = payload.get("attention", [])
+    if isinstance(attention, list) and attention:
+        return "omnius status --attention"
+    brief = find_brief(payload)
+    if brief.get("exists"):
+        return "omnius status --brief"
+    return "omnius task list"
 
 
 def _optional_manifest_string(manifest: dict[str, object] | None, key: str) -> str | None:

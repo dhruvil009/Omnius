@@ -38,7 +38,7 @@ from omnius.prefetch import collect_prefetch_snapshot
 from omnius.preflight import run_preflight
 from omnius.runners import get_runner
 from omnius.runtime import PipelineAlreadyRunning, acquire_pipeline_lock, recover_pipeline_lock, stop_pipeline
-from omnius.status import load_status_snapshot, render_status_table
+from omnius.status import find_brief, load_status_snapshot, render_attention, render_status_table
 from omnius.tasks import (
     SUPPORTED_TASK_TYPES,
     TaskCommandEntry,
@@ -136,6 +136,26 @@ def build_parser() -> argparse.ArgumentParser:
         "--json",
         action="store_true",
         help="Emit machine-readable status JSON",
+    )
+    status_parser.add_argument(
+        "--date",
+        metavar="YYYY-MM-DD",
+        help="Show the latest run for a specific date",
+    )
+    status_parser.add_argument(
+        "--brief",
+        action="store_true",
+        help="Print the selected run's daily brief",
+    )
+    status_parser.add_argument(
+        "--attention",
+        action="store_true",
+        help="Print only attention items for the selected run",
+    )
+    status_parser.add_argument(
+        "--session-start",
+        action="store_true",
+        help="Print status once per latest run for shell session hooks",
     )
     status_parser.set_defaults(handler=status_command)
 
@@ -591,17 +611,104 @@ def _resolve_workspace_home() -> Path:
 
 
 def status_command(args: argparse.Namespace) -> int:
+    workspace_home = _resolve_workspace_home()
+    if args.session_start:
+        if os.environ.get("OMNIUS_DISABLE") == "1" or os.environ.get("OMNIUS_WORKER") == "1":
+            return 0
+        try:
+            snapshot = load_status_snapshot(workspace_home)
+        except FileNotFoundError:
+            return 0
+        except (ValueError, json.JSONDecodeError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        if _session_start_seen(workspace_home, snapshot.journal_dir):
+            return 0
+        exit_code = _emit_session_start_snapshot(args, snapshot)
+        if exit_code == 0:
+            _record_session_start_seen(workspace_home, snapshot.journal_dir)
+        return exit_code
+
     try:
-        snapshot = load_status_snapshot(_resolve_workspace_home())
+        snapshot = load_status_snapshot(workspace_home, run_date=args.date)
     except (FileNotFoundError, ValueError, json.JSONDecodeError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
+
+    return _emit_status_snapshot(args, snapshot)
+
+
+def _emit_status_snapshot(args: argparse.Namespace, snapshot) -> int:
+    if args.attention:
+        attention = snapshot.payload.get("attention", [])
+        if not isinstance(attention, list):
+            attention = []
+        if args.json:
+            print(json.dumps(attention, indent=2, sort_keys=True))
+        else:
+            print(render_attention(snapshot.payload))
+        return 0
+
+    if args.brief:
+        brief = find_brief(snapshot.payload)
+        if not brief.get("exists"):
+            print(f"No daily brief found for {snapshot.journal_dir}", file=sys.stderr)
+            return 1
+        if args.json:
+            payload = dict(snapshot.payload)
+            payload["brief"] = brief
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            content = brief.get("content")
+            print(content if isinstance(content, str) else "", end="")
+        return 0
 
     if args.json:
         print(json.dumps(snapshot.payload, indent=2, sort_keys=True))
     else:
         print(render_status_table(snapshot.payload))
     return 0
+
+
+def _emit_session_start_snapshot(args: argparse.Namespace, snapshot) -> int:
+    if args.json:
+        print(json.dumps(snapshot.payload, indent=2, sort_keys=True))
+    else:
+        print(render_status_table(snapshot.payload))
+    return 0
+
+
+def _session_start_cache_path(workspace_home: Path) -> Path:
+    return workspace_home / "state" / "session_start_seen.json"
+
+
+def _session_start_seen(workspace_home: Path, journal_dir: Path) -> bool:
+    cache = _read_session_start_cache(_session_start_cache_path(workspace_home))
+    seen_journals = cache.get("seen_journals", {})
+    return isinstance(seen_journals, dict) and str(journal_dir) in seen_journals
+
+
+def _record_session_start_seen(workspace_home: Path, journal_dir: Path) -> None:
+    cache_path = _session_start_cache_path(workspace_home)
+    cache = _read_session_start_cache(cache_path)
+    seen_journals = cache.get("seen_journals", {})
+    if not isinstance(seen_journals, dict):
+        seen_journals = {}
+    seen_journals[str(journal_dir)] = datetime.now().astimezone().isoformat()
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(cache_path, {"seen_journals": seen_journals})
+
+
+def _read_session_start_cache(cache_path: Path) -> dict[str, object]:
+    if not cache_path.exists():
+        return {"seen_journals": {}}
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"seen_journals": {}}
+    if not isinstance(payload, dict):
+        return {"seen_journals": {}}
+    return payload
 
 
 def logs_command(args: argparse.Namespace) -> int:
