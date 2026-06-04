@@ -99,6 +99,50 @@ class LogsTests(unittest.TestCase):
         self.assertTrue(result["scheduler_logs"]["launchd_stderr"]["exists"])
         self.assertEqual(result["scheduler_logs"]["launchd_stderr"]["content"], "scheduler traceback\n")
 
+    def test_collect_error_summary_replaces_invalid_scheduler_stderr_bytes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            bootstrap_workspace(home)
+            (home / "logs" / "omnius-launchd.err").write_bytes(b"scheduler \xff traceback\n")
+            journal_dir = home / "journal" / "2026-05-07" / "210000"
+            journal_dir.mkdir(parents=True, exist_ok=True)
+            self._write_dispatch(journal_dir, tasks={})
+
+            result = collect_error_summary(home)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["scheduler_logs"]["launchd_stderr"]["content"], "scheduler \ufffd traceback\n")
+
+    def test_collect_worker_logs_replaces_invalid_artifact_bytes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            journal_dir = home / "journal" / "2026-05-07" / "210000"
+            journal_dir.mkdir(parents=True)
+            self._write_dispatch(journal_dir, tasks={})
+            (journal_dir / "O00001_stdout.json").write_bytes(b'{"status":"FAILURE","error":"boom \xff"}\n')
+            (journal_dir / "O00001_stderr.log").write_bytes(b"stderr \xff details\n")
+
+            result = collect_worker_logs(home, "O00001")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["stdout"]["content"], '{"status":"FAILURE","error":"boom \ufffd"}\n')
+        self.assertEqual(result["stdout"]["json"]["error"], "boom \ufffd")
+        self.assertEqual(result["stderr"]["content"], "stderr \ufffd details\n")
+
+    def test_collect_worker_logs_returns_malformed_stdout_error_after_replacement(self) -> None:
+        with TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            journal_dir = home / "journal" / "2026-05-07" / "210000"
+            journal_dir.mkdir(parents=True)
+            self._write_dispatch(journal_dir, tasks={})
+            (journal_dir / "O00001_stdout.json").write_bytes(b'{"status":"FAILURE","error":\xff}\n')
+
+            result = collect_worker_logs(home, "O00001")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["stdout"]["content"], '{"status":"FAILURE","error":\ufffd}\n')
+        self.assertEqual(result["stdout"]["error"]["code"], "malformed_worker_stdout")
+
     def _write_dispatch(self, journal_dir: Path, *, tasks: dict[str, object]) -> None:
         payload = {
             "pipeline": {

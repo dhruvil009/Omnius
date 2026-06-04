@@ -290,7 +290,7 @@ def _scheduler_log_payloads(home: Path, *, include_content: bool) -> dict[str, o
             "exists": path.exists(),
         }
         if include_content:
-            item["content"] = path.read_text(encoding="utf-8") if path.exists() else None
+            item["content"] = path.read_text(encoding="utf-8", errors="replace") if path.exists() else None
         payload[name] = item
     return payload
 
@@ -303,7 +303,7 @@ def _artifact_payload(path: Path, *, parse_json: bool) -> dict[str, object]:
     }
     if not path.exists():
         return payload
-    content = path.read_text(encoding="utf-8")
+    content = path.read_text(encoding="utf-8", errors="replace")
     payload["content"] = content
     if parse_json:
         try:

@@ -211,6 +211,26 @@ class CliSmokeTests(unittest.TestCase):
         self.assertEqual(payload["stdout"]["json"]["error"], "boom")
         self.assertEqual(payload["stderr"]["content"], "stderr details\n")
 
+    def test_logs_worker_json_replaces_invalid_stdout_and_stderr_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            journal_dir = home / "journal" / "2026-05-07" / "210000"
+            journal_dir.mkdir(parents=True)
+            (journal_dir / "dispatch_log.json").write_text(
+                json.dumps({"pipeline": {"started_at": "2026-05-07T21:00:00-07:00"}, "tasks": {}}),
+                encoding="utf-8",
+            )
+            (journal_dir / "O00001_stdout.json").write_bytes(b'{"status":"FAILURE","error":\xff}\n')
+            (journal_dir / "O00001_stderr.log").write_bytes(b"stderr \xff details\n")
+
+            result = self.run_cli("logs", "worker", "O00001", "--json", env_overrides={"OMNIUS_HOME": str(home)})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["stdout"]["content"], '{"status":"FAILURE","error":\ufffd}\n')
+        self.assertEqual(payload["stdout"]["error"]["code"], "malformed_worker_stdout")
+        self.assertEqual(payload["stderr"]["content"], "stderr \ufffd details\n")
+
     def test_stop_help_mentions_runtime_lock_controls(self) -> None:
         result = self.run_cli("stop", "--help")
         self.assertEqual(result.returncode, 0)
