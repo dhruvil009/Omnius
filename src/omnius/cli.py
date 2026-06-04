@@ -707,7 +707,7 @@ def _read_session_start_cache(cache_path: Path) -> dict[str, object]:
         return {"seen_journals": {}}
     try:
         payload = json.loads(cache_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except (UnicodeDecodeError, json.JSONDecodeError, OSError):
         return {"seen_journals": {}}
     if not isinstance(payload, dict):
         return {"seen_journals": {}}

@@ -251,6 +251,18 @@ class StatusTests(unittest.TestCase):
             self.assertFalse(missing["exists"])
             self.assertIsNone(missing["content"])
 
+    def test_find_brief_replaces_invalid_bytes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            journal_dir = self._seed_run(home=home, run_date="2026-05-06", run_time="2100", pipeline_status="completed")
+            brief_path = journal_dir / "daily_brief.md"
+            brief_path.write_bytes(b"# Brief \xff\n")
+
+            brief = find_brief(build_status_payload(journal_dir))
+
+        self.assertTrue(brief["exists"])
+        self.assertEqual(brief["content"], "# Brief \ufffd\n")
+
     def test_render_attention_only_output(self) -> None:
         payload = {
             "attention": [

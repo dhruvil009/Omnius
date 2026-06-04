@@ -162,7 +162,7 @@ def find_brief(payload: dict[str, object]) -> dict[str, object]:
             return {
                 "path": str(candidate),
                 "exists": True,
-                "content": candidate.read_text(encoding="utf-8"),
+                "content": candidate.read_text(encoding="utf-8", errors="replace"),
             }
 
     return {"path": None, "exists": False, "content": None}
@@ -185,7 +185,10 @@ def _read_required_json(path: Path) -> dict[str, object]:
 def _read_optional_json(path: Path) -> dict[str, object] | None:
     if not path.exists():
         return None
-    text = path.read_text(encoding="utf-8").strip()
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"Malformed JSON at {path}: {exc.reason}") from exc
     if not text:
         return None
     payload = json.loads(text)

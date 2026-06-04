@@ -187,6 +187,20 @@ class CliSmokeTests(unittest.TestCase):
         self.assertEqual(result.stdout, "")
         self.assertIn("No Omnius runs found for 2026-05-07", result.stderr)
 
+    def test_status_json_reports_invalid_byte_dispatch_log_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            journal_dir = home / "journal" / "2026-05-06" / "210000"
+            journal_dir.mkdir(parents=True)
+            (journal_dir / "dispatch_log.json").write_bytes(b'{"pipeline": {"run_date": "2026-05-06"}, "bad": "\xff"}')
+
+            result = self.run_cli("status", "--json", env_overrides={"OMNIUS_HOME": str(home)})
+
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("Malformed JSON", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
     def test_status_brief_outputs_markdown_and_json_envelope(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / ".omnius"
@@ -311,6 +325,20 @@ class CliSmokeTests(unittest.TestCase):
         self.assertEqual(json.loads(first.stdout)["summary"], "run")
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertEqual(second.stdout, "")
+
+    def test_status_session_start_ignores_invalid_byte_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ".omnius"
+            self._seed_status_run(home, "2026-05-06", "210000", "run")
+            cache_path = home / "state" / "session_start_seen.json"
+            cache_path.parent.mkdir(parents=True)
+            cache_path.write_bytes(b"\xff")
+
+            result = self.run_cli("status", "--session-start", env_overrides={"OMNIUS_HOME": str(home)})
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Run: 2026-05-06 210000", result.stdout)
+        self.assertNotIn("Traceback", result.stderr)
 
     def test_status_session_start_env_suppressors_do_not_mutate_cache(self) -> None:
         for env_name in ("OMNIUS_DISABLE", "OMNIUS_WORKER"):
