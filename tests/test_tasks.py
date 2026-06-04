@@ -231,7 +231,7 @@ class RecurringTaskParsingTests(unittest.TestCase):
                     title: Review backlog
                     repo: example
                     schedule: weekly:wed
-                    type: maintenance
+                    type: research
                     complexity: medium
                     max_time_minutes: 45
                     retry_on_failure: immediate
@@ -256,7 +256,7 @@ class RecurringTaskParsingTests(unittest.TestCase):
                     title="Review backlog",
                     repo_slug="example",
                     schedule="weekly:wed",
-                    task_type="maintenance",
+                    task_type="research",
                     complexity="medium",
                     max_time_minutes=45,
                     retry_on_failure="immediate",
@@ -267,7 +267,7 @@ class RecurringTaskParsingTests(unittest.TestCase):
                         title: Review backlog
                         repo: example
                         schedule: weekly:wed
-                        type: maintenance
+                        type: research
                         complexity: medium
                         max_time_minutes: 45
                         retry_on_failure: immediate

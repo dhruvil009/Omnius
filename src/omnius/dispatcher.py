@@ -20,6 +20,14 @@ from omnius.runners.base import RunnerAdapter, UsageStats, WorkerRequest, parse_
 from omnius.tasks import archive_local_task_success, move_local_task_to_pending_approval
 
 
+_WORKER_PROMPT_TEMPLATES = {
+    "implementation": "worker_implementation.md",
+    "design": "worker_design.md",
+    "research": "worker_research.md",
+    "comment_resolution": "worker_comment_resolution.md",
+}
+
+
 def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temp_name = tempfile.mkstemp(
@@ -459,7 +467,7 @@ def _render_worker_prompt(
     journal_dir: Path,
     task_body: str,
 ) -> str:
-    template = _load_worker_prompt_template()
+    template = _load_worker_prompt_template(task.task_type)
     return template.format(
         task_id=task.task_id,
         title=task.title,
@@ -474,8 +482,12 @@ def _render_worker_prompt(
     )
 
 
-def _load_worker_prompt_template() -> str:
-    resource = resources.files("omnius").joinpath("resources", "prompts", "worker_implementation.md")
+def _load_worker_prompt_template(task_type: str = "implementation") -> str:
+    template_name = _WORKER_PROMPT_TEMPLATES.get(task_type)
+    if template_name is None:
+        supported_types = ", ".join(sorted(_WORKER_PROMPT_TEMPLATES))
+        raise ValueError(f"Unsupported task type '{task_type}'. Supported task types: {supported_types}")
+    resource = resources.files("omnius").joinpath("resources", "prompts", template_name)
     return resource.read_text(encoding="utf-8")
 
 

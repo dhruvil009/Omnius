@@ -192,6 +192,55 @@ class PlannerTests(unittest.TestCase):
 
         validate_manifest(manifest)
 
+    def test_validate_manifest_accepts_supported_task_types(self) -> None:
+        for task_type in ("implementation", "design", "research", "comment_resolution"):
+            with self.subTest(task_type=task_type):
+                manifest = {
+                    "run_date": "2026-05-05",
+                    "journal_dir": "/tmp/journal",
+                    "summary": "1 task planned",
+                    "tasks": [
+                        {
+                            "id": "O00001",
+                            "title": "Typed task",
+                            "type": task_type,
+                            "repo_slug": "example",
+                            "source_ref": "tasks/O00001_typed.md",
+                            "filename": "O00001_typed.md",
+                            "max_time_minutes": 120,
+                            "complexity": "small",
+                        }
+                    ],
+                    "skipped": [],
+                    "notes": "stub",
+                }
+
+                validate_manifest(manifest)
+
+    def test_validate_manifest_rejects_unsupported_task_type(self) -> None:
+        manifest = {
+            "run_date": "2026-05-05",
+            "journal_dir": "/tmp/journal",
+            "summary": "1 task planned",
+            "tasks": [
+                {
+                    "id": "O00001",
+                    "title": "Typed task",
+                    "type": "maintenance",
+                    "repo_slug": "example",
+                    "source_ref": "tasks/O00001_typed.md",
+                    "filename": "O00001_typed.md",
+                    "max_time_minutes": 120,
+                    "complexity": "small",
+                }
+            ],
+            "skipped": [],
+            "notes": "stub",
+        }
+
+        with self.assertRaisesRegex(ValueError, "manifest.tasks\\[0\\].type"):
+            validate_manifest(manifest)
+
     def test_validate_manifest_rejects_duplicate_task_ids(self) -> None:
         manifest = {
             "run_date": "2026-05-05",
@@ -328,7 +377,7 @@ class PlannerTests(unittest.TestCase):
                     title="Daily cleanup",
                     repo_slug="example",
                     schedule="daily",
-                    task_type="maintenance",
+                    task_type="research",
                     complexity="medium",
                     max_time_minutes=45,
                     retry_on_failure="next_run",
@@ -365,7 +414,7 @@ class PlannerTests(unittest.TestCase):
                 {
                     "id": "R00001",
                     "title": "Daily cleanup",
-                    "type": "maintenance",
+                    "type": "research",
                     "repo_slug": "example",
                     "source": "recurring_queue",
                     "source_ref": "tasks/recurring/R00001_daily_cleanup.md",
@@ -383,6 +432,35 @@ class PlannerTests(unittest.TestCase):
                 },
             ],
         )
+
+    def test_build_manifest_tasks_preserves_supported_local_task_type(self) -> None:
+        manifest_tasks = build_manifest_tasks(
+            local_entries=[
+                LocalTaskEntry(
+                    task_id="O00001",
+                    filename="O00001_research.md",
+                    body="---\ntitle: Research sample\nrepo: example\ntype: research\n---\nBody\n",
+                )
+            ],
+            recurring_entries=[],
+            default_task_budget_minutes=120,
+        )
+
+        self.assertEqual(manifest_tasks[0]["type"], "research")
+
+    def test_build_manifest_tasks_rejects_unsupported_local_task_type(self) -> None:
+        with self.assertRaisesRegex(ValueError, "type"):
+            build_manifest_tasks(
+                local_entries=[
+                    LocalTaskEntry(
+                        task_id="O00001",
+                        filename="O00001_bad.md",
+                        body="---\ntitle: Bad sample\nrepo: example\ntype: maintenance\n---\nBody\n",
+                    )
+                ],
+                recurring_entries=[],
+                default_task_budget_minutes=120,
+            )
 
         with self.assertRaisesRegex(ValueError, "max_time_minutes"):
             validate_manifest(

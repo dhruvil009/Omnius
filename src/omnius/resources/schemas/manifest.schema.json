@@ -55,7 +55,13 @@
             "type": "string"
           },
           "type": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "implementation",
+              "design",
+              "research",
+              "comment_resolution"
+            ]
           },
           "repo_slug": {
             "type": "string"

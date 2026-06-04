@@ -8,4 +8,6 @@ Manifest contract:
 - `source_ref` must be a relative path under `tasks/`; never emit absolute paths or `..` segments.
 - Task IDs must be unique. If a task cannot be accepted, put an object in `skipped` with `id` and `skip_reason`.
 - If a local task specifies an `agent` override in its frontmatter, preserve that `agent` field on the corresponding manifest task entry.
-- Implementation and maintenance tasks must use a completion contract requiring a committed branch or PR URL before archival.
+- Supported task types are `implementation`, `design`, `research`, and `comment_resolution`.
+- Implementation and comment-resolution tasks must use a completion contract requiring a committed branch or PR URL before archival.
+- Design and research tasks must require a durable document artifact and include open questions when applicable.

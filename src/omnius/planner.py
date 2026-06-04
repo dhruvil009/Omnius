@@ -6,7 +6,7 @@ import json
 from pathlib import Path, PurePosixPath
 
 from omnius.config import SUPPORTED_RUNNERS
-from omnius.tasks import LocalTaskEntry, RecurringTaskEntry
+from omnius.tasks import SUPPORTED_TASK_TYPES, LocalTaskEntry, RecurringTaskEntry
 
 
 @dataclass(frozen=True)
@@ -152,7 +152,7 @@ def build_local_manifest_tasks(
             ManifestTask(
                 task_id=entry.task_id,
                 title=_require_frontmatter_value(metadata, "title", entry.task_id),
-                task_type="implementation",
+                task_type=_parse_task_type(metadata.get("type"), task_id=entry.task_id),
                 repo_slug=_require_frontmatter_value(metadata, "repo", entry.task_id),
                 source_ref=str(Path("tasks") / entry.filename),
                 filename=entry.filename,
@@ -185,7 +185,7 @@ def build_manifest_tasks(
             ManifestTask(
                 task_id=entry.task_id,
                 title=entry.title,
-                task_type=entry.task_type,
+                task_type=_parse_task_type(entry.task_type, task_id=entry.task_id),
                 repo_slug=entry.repo_slug,
                 source_ref=str(Path("tasks") / "recurring" / entry.filename),
                 filename=entry.filename,
@@ -358,6 +358,15 @@ def _require_frontmatter_value(metadata: dict[str, str], key: str, task_id: str)
     if not value:
         raise ValueError(f"Task {task_id} frontmatter must define '{key}'")
     return value
+
+
+def _parse_task_type(raw_value: str | None, *, task_id: str) -> str:
+    if raw_value is None or raw_value == "":
+        return "implementation"
+    normalized = raw_value.strip()
+    if normalized in SUPPORTED_TASK_TYPES:
+        return normalized
+    raise ValueError(f"Task {task_id} frontmatter has invalid 'type': {raw_value}")
 
 
 def _default_completion_contract() -> dict[str, object]:

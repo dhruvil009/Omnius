@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from omnius.config import CapabilityConfig, GlobalConfig, OmniusConfig, RepoConfig, RunnerSelection
-from omnius.dispatcher import dispatch_manifest, initialize_dispatch_log
+from omnius.dispatcher import DispatchTask, _render_worker_prompt, dispatch_manifest, initialize_dispatch_log
 from omnius.runners.base import DayPrepInvocation, PlannerInvocation, RunnerAdapter, RunnerCapability, RunnerHealth, WorkerRequest
 
 
@@ -41,6 +41,60 @@ class FakeRunner(RunnerAdapter):
 
 
 class DispatchExecutionTests(unittest.TestCase):
+    def test_render_worker_prompt_selects_task_type_specific_templates(self) -> None:
+        expectations = {
+            "implementation": "Quality phases:",
+            "design": "Design worker guidance",
+            "research": "Research worker guidance",
+            "comment_resolution": "Comment resolution worker guidance",
+        }
+
+        for task_type, marker in expectations.items():
+            with self.subTest(task_type=task_type):
+                prompt = _render_worker_prompt(
+                    task=DispatchTask(
+                        task_id="O00001",
+                        title="Typed task",
+                        task_type=task_type,
+                        repo_slug="example",
+                        source_ref="tasks/O00001_typed.md",
+                        filename="O00001_typed.md",
+                        agent=None,
+                        max_time_minutes=45,
+                        complexity="small",
+                    ),
+                    branch="omnius/2026-05-05/O00001",
+                    base_ref="origin/main",
+                    journal_dir=Path("/tmp/journal"),
+                    task_body="Task body",
+                )
+
+            self.assertIn(f"Task type: {task_type}", prompt)
+            self.assertIn(marker, prompt)
+            self.assertIn("Task body", prompt)
+
+    def test_render_worker_prompt_rejects_unsupported_task_type(self) -> None:
+        task = DispatchTask(
+            task_id="O00001",
+            title="Unsupported task",
+            task_type="maintenance",
+            repo_slug="example",
+            source_ref="tasks/O00001_unsupported.md",
+            filename="O00001_unsupported.md",
+            agent=None,
+            max_time_minutes=45,
+            complexity="small",
+        )
+
+        with self.assertRaisesRegex(ValueError, "Unsupported task type"):
+            _render_worker_prompt(
+                task=task,
+                branch="omnius/2026-05-05/O00001",
+                base_ref="origin/main",
+                journal_dir=Path("/tmp/journal"),
+                task_body="Task body",
+            )
+
     def test_dispatch_manifest_creates_worktree_invokes_worker_and_archives_success(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -684,7 +738,7 @@ class DispatchExecutionTests(unittest.TestCase):
         return {
             "id": "R00001",
             "title": "Daily cleanup",
-            "type": "maintenance",
+            "type": "research",
             "repo_slug": "example",
             "source_ref": "tasks/recurring/R00001_daily_cleanup.md",
             "filename": "R00001_daily_cleanup.md",
@@ -742,7 +796,7 @@ class DispatchExecutionTests(unittest.TestCase):
                 title: Daily cleanup
                 repo: example
                 schedule: daily
-                type: maintenance
+                type: research
                 complexity: medium
                 max_time_minutes: 45
                 ---

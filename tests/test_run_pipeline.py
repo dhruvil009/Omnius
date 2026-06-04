@@ -269,7 +269,7 @@ class RunPipelineTests(unittest.TestCase):
                     {
                         "id": "R00001",
                         "title": "Daily cleanup",
-                        "type": "maintenance",
+                        "type": "research",
                         "repo_slug": "example",
                         "source": "recurring_queue",
                         "source_ref": "tasks/recurring/R00001_daily_cleanup.md",
@@ -670,7 +670,7 @@ class RunPipelineTests(unittest.TestCase):
                 title: Daily cleanup
                 repo: example
                 schedule: daily
-                type: maintenance
+                type: research
                 complexity: medium
                 max_time_minutes: 45
                 ---
