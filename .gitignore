@@ -1,16 +1,5 @@
 .DS_Store
 
-# Existing design docs are intentionally kept out of this repo's history.
-/April_15_review.md
-/DEPENDENCIES.md
-/Development_Handoff.md
-/Omnius.md
-/Omnius_Codex_Plugin.md
-/Omnius_Plugin.md
-/docs/superpowers/
-/April 22 Backup/
-/Origin/
-
 # Local worktree isolation.
 /.worktrees/
 /worktrees/
