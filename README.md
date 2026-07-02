@@ -1,8 +1,36 @@
+```text
+ _    ___   ___  ___  ___   _ _    _____   _____ _____   _____  _  _ ___ 
+| |  / _ \ / _ \| _ \/ __| | | |  | __\ \ / / __| _ \ \ / / _ \| \| | __|
+| |_| (_) | (_) |  _/\__ \ |_  _| | _| \ V /| _||   /\ V / (_) | .` | _| 
+|____\___/ \___/|_|  |___/   |_|  |___| \_/ |___|_|_\ |_| \___/|_|\_|___|
+```
+
+<p align="center">
+  <strong>Local-first loop engineering for Codex and Claude Code users.</strong>
+</p>
+<p align="center">
+  Turn a task queue, scheduler, worktrees, agent runners, logs, and a morning brief into one repeatable local loop.
+</p>
+
 # Omnius
 
 ![Omnius night ops promotional card](assets/social/omnius_night_ops_promo.png)
 
-Omnius is a local overnight orchestration tool that plans work from a task queue, dispatches isolated agent sessions against configured git repositories, and writes a morning status brief.
+Omnius is a local-first loop runner for coding agents. It plans work from a task queue, dispatches isolated agent sessions against configured git repositories, and writes a morning status brief.
+
+## Loops, Locally
+
+For Omnius, a loop is a repeatable harness around a coding agent: discover work, prompt the agent, isolate execution, record what happened, and bring the human back in for review.
+
+Omnius gives developers who already use Codex or Claude Code the pieces of that loop without building their own orchestration layer:
+
+- task queue and recurring tasks for durable loop input
+- `launchd` or `cron` scheduling for repeatable execution
+- per-task git worktrees so agents do not step on each other
+- Codex and Claude runner support for local agent sessions
+- preflight checks, logs, status, journal artifacts, and a morning brief for review
+
+It is intentionally local-first and inspectable: Omnius helps you run bounded loops around your own repos, not hand the repo to an opaque always-on service.
 
 ## Requirements
 
