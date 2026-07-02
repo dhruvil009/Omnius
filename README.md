@@ -1,5 +1,7 @@
 # Omnius
 
+![Omnius night ops promotional card](assets/social/omnius_night_ops_promo.png)
+
 Omnius is a local overnight orchestration tool that plans work from a task queue, dispatches isolated agent sessions against configured git repositories, and writes a morning status brief.
 
 ## Requirements
